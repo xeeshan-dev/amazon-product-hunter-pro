@@ -1,0 +1,52 @@
+# Core dependencies
+streamlit==1.29.0
+pandas==2.1.4
+requests==2.31.0
+beautifulsoup4==4.12.2
+fake-useragent==1.4.0
+lxml==4.9.3
+
+# API Framework
+fastapi==0.108.0
+uvicorn[standard]==0.25.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-multipart==0.0.6
+
+# Database
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.13.1
+
+# Cache & Queue
+redis==5.0.1
+celery==5.3.4
+
+# Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.0
+
+# Monitoring
+sentry-sdk==1.39.1
+prometheus-client==0.19.0
+
+# HTTP & Scraping
+httpx==0.25.2
+aiohttp==3.9.1
+tenacity==8.2.3
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+
+# Testing (optional for production)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.25.2
+
+# Code Quality
+black==23.12.1
+flake8==6.1.0
+mypy==1.7.1
