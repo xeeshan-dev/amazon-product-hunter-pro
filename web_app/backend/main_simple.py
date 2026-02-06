@@ -123,6 +123,12 @@ async def search_products(request: SearchRequest):
     try:
         logger.info(f"Search request: {request.keyword} (filters: amazon_seller={request.skip_amazon_seller}, brand_seller={request.skip_brand_seller}, sales={request.min_sales}-{request.max_sales})")
         
+        # Log seller info fetching strategy
+        if request.skip_amazon_seller or request.skip_brand_seller:
+            logger.info(f"🔍 Seller info fetching: ENABLED (will fetch for ALL products)")
+        else:
+            logger.info(f"⚡ Seller info fetching: DISABLED (faster search)")
+        
         # Marketplace URLs
         marketplace_urls = {
             "US": "https://www.amazon.com",
@@ -140,9 +146,8 @@ async def search_products(request: SearchRequest):
         processed_results = []
         total_market_revenue = 0
         
-        # Track how many products we've fetched seller info for (limit to avoid rate limiting)
-        seller_info_fetch_count = 0
-        max_seller_info_fetches = 25  # Fetch seller info for top 25 products max
+        # REMOVED: seller_info_fetch_count limit
+        # We now fetch seller info for ALL products if filters are active
         
         for product in products:
             # Rating filter
@@ -217,9 +222,10 @@ async def search_products(request: SearchRequest):
             
             # =========================================
             # NEW: Fetch Seller Info (BEFORE filtering, so we can filter by seller)
+            # ⭐ KEY CHANGE: No more 25-product limit when filters are active
             # =========================================
             if request.skip_amazon_seller or request.skip_brand_seller:
-                # If filters are active, we MUST fetch seller info
+                # If filters are active, we MUST fetch seller info for ALL products
                 try:
                     asin = product.get('asin')
                     if asin:
@@ -240,7 +246,7 @@ async def search_products(request: SearchRequest):
                     logger.warning(f"Failed to fetch seller info for {asin}: {e}")
                     product['seller_info'] = {'amazon_seller': False, 'total_sellers': 0, 'seller_name': None}
             else:
-                # If filters are off, skip seller info to save time
+                # If filters are OFF, skip fetching seller info (faster)
                 product['seller_info'] = {'amazon_seller': False, 'total_sellers': 0, 'seller_name': None}
             
             # =========================================
