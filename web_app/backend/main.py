@@ -88,9 +88,8 @@ async def search_products(request: SearchRequest):
         processed_results = []
         total_market_revenue = 0
         
-        # Track seller info fetches to avoid rate limiting
-        seller_info_fetch_count = 0
-        max_seller_info_fetches = 25
+        # REMOVED: seller_info_fetch_count limit
+        # We now fetch seller info for ALL products if filters are active
 
         # First pass: Scoring and Revenue
         for product in products:
@@ -159,14 +158,15 @@ async def search_products(request: SearchRequest):
             if sales < request.min_sales or sales > request.max_sales:
                 continue
             
-            # 6. Fetch Seller Info (for top products only to avoid rate limiting)
-            if request.fetch_seller_info and seller_info_fetch_count < max_seller_info_fetches:
+            # 6. Fetch Seller Info (CONDITIONAL - only when filters need it)
+            # ⭐ KEY CHANGE: No more 25-product limit when filters are active
+            if request.skip_amazon_seller or request.skip_brand_seller:
+                # If seller filters are active, fetch ALL seller info
                 try:
                     asin = product.get('asin')
                     if asin:
                         seller_summary = scraper.get_seller_summary(asin)
                         product['seller_info'] = seller_summary
-                        seller_info_fetch_count += 1
                         
                         # Extract brand if not available
                         brand = product.get('brand', '')
@@ -175,11 +175,16 @@ async def search_products(request: SearchRequest):
                             brand = title.split(' ')[0] if title else ''
                         product['brand'] = brand
                         
-                        logger.info(f"Fetched seller info for {asin}: amazon={seller_summary.get('amazon_seller')}, sellers={seller_summary.get('total_sellers')}")
+                        logger.debug(f"[{asin}] seller='{seller_summary.get('seller_name')}' brand='{brand}'")
+                        
+                        # Rate limiting delay
+                        import time, random
+                        time.sleep(random.uniform(0.3, 0.7))
                 except Exception as e:
-                    logger.warning(f"Failed to fetch seller info for {product.get('asin')}: {e}")
+                    logger.warning(f"Failed to fetch seller info for {asin}: {e}")
                     product['seller_info'] = {'amazon_seller': False, 'total_sellers': 0, 'seller_name': None}
             else:
+                # Filters OFF - skip seller info for speed
                 product['seller_info'] = {'amazon_seller': False, 'total_sellers': 0, 'seller_name': None}
             
             # 7. Skip Amazon Seller Filter
