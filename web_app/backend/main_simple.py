@@ -8,6 +8,8 @@ from typing import List, Dict, Any
 import sys
 import os
 import logging
+import time
+import random
 
 # Add src path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -214,16 +216,15 @@ async def search_products(request: SearchRequest):
                 continue
             
             # =========================================
-            # NEW: Fetch Seller Info (for top products only)
+            # NEW: Fetch Seller Info (BEFORE filtering, so we can filter by seller)
             # =========================================
-            if request.fetch_seller_info and seller_info_fetch_count < max_seller_info_fetches:
+            if request.skip_amazon_seller or request.skip_brand_seller:
+                # If filters are active, we MUST fetch seller info
                 try:
                     asin = product.get('asin')
                     if asin:
-                        # Use the fast seller summary method
                         seller_summary = scraper.get_seller_summary(asin)
                         product['seller_info'] = seller_summary
-                        seller_info_fetch_count += 1
                         
                         # Extract brand from title if not available
                         brand = product.get('brand', '')
@@ -231,13 +232,15 @@ async def search_products(request: SearchRequest):
                             brand = extract_brand_from_title(product.get('title', ''))
                         product['brand'] = brand
                         
-                        logger.debug(f"[{asin}] seller='{seller_summary.get('seller_name')}' brand='{brand}'")
-                        logger.info(f"Fetched seller info for {asin}: amazon={seller_summary.get('amazon_seller')}, sellers={seller_summary.get('total_sellers')}")
+                        logger.debug(f"[{asin}] Fetched seller: {seller_summary.get('seller_name')}, brand: {brand}")
+                        
+                        # Add delay to avoid rate limiting (random 0.5-1.5s)
+                        time.sleep(random.uniform(0.5, 1.5))
                 except Exception as e:
-                    logger.warning(f"Failed to fetch seller info for {product.get('asin')}: {e}")
+                    logger.warning(f"Failed to fetch seller info for {asin}: {e}")
                     product['seller_info'] = {'amazon_seller': False, 'total_sellers': 0, 'seller_name': None}
             else:
-                # Default seller info for products we didn't fetch
+                # If filters are off, skip seller info to save time
                 product['seller_info'] = {'amazon_seller': False, 'total_sellers': 0, 'seller_name': None}
             
             # =========================================

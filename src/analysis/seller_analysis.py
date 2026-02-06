@@ -325,17 +325,26 @@ class SellerAnalyzer:
         return sellers
 
     def _get_sprite_content_from_soup_or_ajax(self, soup, asin: str = None, headers: dict = None, session=None, referer: str = None) -> str:
-        """Try to retrieve seller sprite (AOD) HTML via iframe src, AJAX, or offer-listing page."""
+        """
+        Try to retrieve seller sprite (AOD) HTML via iframe src, AJAX, or offer-listing page.
+        This is faster than parsing the main product page.
+        """
+        if not asin or not session:
+            return None
+            
         try:
             import requests
             sess = session or requests.Session()
             req_headers = headers.copy() if headers else {}
             
+            # Amazon's All Offers Display AJAX endpoint (recommended)
+            aod_url = f"https://www.amazon.com/gp/aod/ajax/ref=dp_aod_NEW_mbc?asin={asin}"
+            
             # Enhanced headers to mimic real browser behavior
             req_headers.update({
-                'x-requested-with': 'XMLHttpRequest',
-                'referer': referer or 'https://www.amazon.com/',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept': 'text/html,*/*',
+                'Referer': referer or f'https://www.amazon.com/dp/{asin}',
+                'X-Requested-With': 'XMLHttpRequest',
                 'accept-language': 'en-US,en;q=0.9',
                 'accept-encoding': 'gzip, deflate, br',
                 'cache-control': 'no-cache',
@@ -356,7 +365,19 @@ class SellerAnalyzer:
             except Exception:
                 pass
 
-            # 1) Try multiple AOD endpoints (most reliable)
+            # Try primary AOD endpoint first
+            try:
+                response = sess.get(aod_url, headers=req_headers, timeout=10)
+                
+                if response.status_code == 200:
+                    logger.debug(f"[{asin}] Successfully fetched AOD data")
+                    return response.text
+                else:
+                    logger.warning(f"[{asin}] AOD endpoint returned {response.status_code}")
+            except Exception as e:
+                logger.error(f"[{asin}] Error fetching AOD data: {e}")
+
+            # Fallback: Try multiple AOD endpoints
             if asin:
                 aod_endpoints = [
                     # Standard endpoints
@@ -367,28 +388,21 @@ class SellerAnalyzer:
                     # Prime-eligible variants to expose FBA offers
                     f'https://www.amazon.com/gp/aod/ajax?asin={asin}&isPrimeEligible=true',
                     f'https://www.amazon.com/gp/aod/ajax/ref=dp_aod?asin={asin}&isPrimeEligible=true',
-                    f'https://www.amazon.com/gp/aod/ajax/ref=dp_aod_all?asin={asin}&isPrimeEligible=true',
-                    f'https://www.amazon.com/gp/aod/ajax/ref=dp_aod_new?asin={asin}&isPrimeEligible=true',
-                    f'https://www.amazon.com/gp/aod/ajax?asin={asin}&pageno=1&isPrimeEligible=true'
                 ]
                 
                 for endpoint in aod_endpoints:
                     try:
                         resp = sess.get(endpoint, headers=req_headers, timeout=10)
                         if resp.ok and resp.text:
-                            logger.info(f"Successfully fetched AOD content from {endpoint}")
-                            # Debug: Log first 500 chars of response
-                            logger.debug(f"AOD Response preview: {resp.text[:500]}")
+                            logger.debug(f"[{asin}] Fetched from fallback: {endpoint}")
                             # Check for various offer indicators
                             if any(indicator in resp.text for indicator in ['aod-offer', 'olpOffer', 'offer', 'seller', 'prime']):
                                 return resp.text
-                            else:
-                                logger.debug(f"No seller indicators found in AOD response from {endpoint}")
                     except Exception as e:
                         logger.debug(f"Failed to fetch from {endpoint}: {str(e)}")
                         continue
 
-            # 2) Look for iframe on the page
+            # Look for iframe on the page
             if soup:
                 sprite_iframe = soup.find('iframe', {'id': 'all-offers-display-scroller'})
                 if sprite_iframe and sprite_iframe.get('src'):
@@ -402,7 +416,7 @@ class SellerAnalyzer:
                     except Exception as e:
                         logger.debug(f"Failed to fetch iframe content: {str(e)}")
 
-            # 3) Fallback to offer-listing page
+            # Fallback to offer-listing page
             if asin:
                 offer_url = f'https://www.amazon.com/gp/offer-listing/{asin}'
                 try:
@@ -412,18 +426,10 @@ class SellerAnalyzer:
                 except Exception as e:
                     logger.debug(f"Failed to fetch offer-listing page: {str(e)}")
 
-                # Try offer-listing filtered to Prime eligible
-                try:
-                    prime_offer_url = f'https://www.amazon.com/gp/offer-listing/{asin}?condition=new&f_primeEligible=true'
-                    resp = sess.get(prime_offer_url, headers=req_headers, timeout=10)
-                    if resp.ok and resp.text:
-                        return resp.text
-                except Exception as e:
-                    logger.debug(f"Failed to fetch prime-eligible offer-listing page: {str(e)}")
-
         except Exception as e:
             logger.error(f"Error getting AOD/offers content: {str(e)}")
-            return None
+            
+        return None
             
     def _parse_sprite_sellers(self, content: str) -> list:
         """Parse seller information from AOD sprite or offer-listing HTML."""
