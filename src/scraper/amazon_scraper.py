@@ -223,11 +223,19 @@ class AmazonScraper:
                 'fbm_count': info.fbm_count,
                 'amazon_seller': info.amazon_seller,
                 'total_sellers': info.total_sellers,
-                'prices': info.prices
+                'prices': info.prices,
+                'seller_name': info.seller_name  # ← ADDED
             }
         except Exception as e:
             logger.error(f"Error fetching seller summary for {asin}: {str(e)}")
-            return {'fba_count': 0, 'fbm_count': 0, 'amazon_seller': False, 'total_sellers': 0, 'prices': {'fba': [], 'fbm': []}}
+            return {
+                'fba_count': 0,
+                'fbm_count': 0,
+                'amazon_seller': False,
+                'total_sellers': 0,
+                'prices': {'fba': [], 'fbm': []},
+                'seller_name': None  # ← ADDED
+            }
             
     def _extract_search_item_data(self, item) -> Optional[Dict]:
         try:

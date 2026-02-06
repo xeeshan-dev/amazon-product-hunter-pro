@@ -996,7 +996,7 @@ function App() {
                                         <h3 className="text-xl font-bold text-slate-200">Top Opportunities</h3>
                                         <span className="text-xs text-slate-400 mt-1 block">
                                             Showing {data.results.filter(p => {
-                                                if (showWinnersOnly && (p.is_vetoed || p.enhanced_score < 75 || p.margin < 30)) return false
+                                                if (showWinnersOnly && (p.is_vetoed || p.enhanced_score < 60 || p.margin < 25)) return false
                                                 if (p.margin < minMargin) return false
                                                 if (skipAmazonSeller && p.seller_info?.amazon_seller) return false
                                                 if (skipBrandSeller && p.seller_info?.seller_name && p.brand) {
@@ -1044,7 +1044,7 @@ function App() {
                                         .filter(p => {
                                             // Winner filter
                                             if (showWinnersOnly) {
-                                                if (p.is_vetoed || p.enhanced_score < 75 || p.margin < 30) return false
+                                                if (p.is_vetoed || p.enhanced_score < 60 || p.margin < 25) return false
                                             }
 
                                             // Margin filter
@@ -1174,7 +1174,8 @@ function StatCard({ title, value, icon: Icon, color }) {
 
 function ProductCard({ product, rank, onClick, onToggleComparison, onAddToWatchlist, onAddToTracking, isSelected, isTracked }) {
     const isVetoed = product.is_vetoed
-    const isWinner = !isVetoed && product.enhanced_score >= 75 && product.margin >= 30
+    // Lowered threshold: 60 instead of 75, 25% instead of 30%
+    const isWinner = !isVetoed && product.enhanced_score >= 60 && product.margin >= 25
 
     return (
         <motion.div

@@ -54,6 +54,40 @@ tools = {
 }
 
 
+# Helper function for brand extraction
+import re
+
+def extract_brand_from_title(title: str) -> str:
+    """Extract brand from product title using multiple heuristics"""
+    if not title:
+        return ''
+    
+    title = title.strip()
+    
+    # Method 1: "by BrandName" pattern
+    match = re.search(r'\bby\s+([A-Z][A-Za-z0-9&\-\s]{2,30})', title)
+    if match:
+        brand = match.group(1).strip()
+        brand = re.sub(r'\s+(for|with|in|and|or|the)$', '', brand, flags=re.IGNORECASE)
+        return brand
+    
+    # Method 2: All-caps at start
+    match = re.match(r'^([A-Z][A-Z0-9&\-]{2,15})\s+', title)
+    if match:
+        return match.group(1)
+    
+    # Method 3: Title-case at start
+    match = re.match(r'^([A-Z][a-z]+(?:[A-Z][a-z]+)*)\s+', title)
+    if match:
+        brand = match.group(1)
+        if brand.lower() not in ['the', 'best', 'premium', 'new', 'improved', 'original']:
+            return brand
+    
+    # Fallback: first word
+    words = title.split()
+    return re.sub(r'[^\w\-&]', '', words[0]) if words else ''
+
+
 # Models
 class SearchRequest(BaseModel):
     keyword: str
@@ -194,11 +228,10 @@ async def search_products(request: SearchRequest):
                         # Extract brand from title if not available
                         brand = product.get('brand', '')
                         if not brand:
-                            # Try to extract brand from title (usually first word(s))
-                            title = product.get('title', '')
-                            brand = title.split(' ')[0] if title else ''
+                            brand = extract_brand_from_title(product.get('title', ''))
                         product['brand'] = brand
                         
+                        logger.debug(f"[{asin}] seller='{seller_summary.get('seller_name')}' brand='{brand}'")
                         logger.info(f"Fetched seller info for {asin}: amazon={seller_summary.get('amazon_seller')}, sellers={seller_summary.get('total_sellers')}")
                 except Exception as e:
                     logger.warning(f"Failed to fetch seller info for {product.get('asin')}: {e}")
@@ -222,12 +255,19 @@ async def search_products(request: SearchRequest):
                 seller_name = product.get('seller_info', {}).get('seller_name', '') or ''
                 brand = product.get('brand', '') or ''
                 
-                if seller_name and brand:
-                    seller_lower = seller_name.lower()
-                    brand_lower = brand.lower()
-                    # Check if seller name contains brand or vice versa
-                    if brand_lower in seller_lower or seller_lower in brand_lower:
-                        logger.info(f"Skipping product {product.get('asin')} - Seller '{seller_name}' matches brand '{brand}'")
+                if seller_name and brand and len(brand) >= 3:
+                    seller_lower = seller_name.lower().strip()
+                    brand_lower = brand.lower().strip()
+                    
+                    # Remove common business suffixes for better matching
+                    seller_clean = re.sub(r'\b(llc|inc|corp|ltd|store|shop|official|direct|usa|us)\b', '', seller_lower, flags=re.IGNORECASE).strip()
+                    brand_clean = re.sub(r'\b(llc|inc|corp|ltd|store|shop|official|direct|usa|us)\b', '', brand_lower, flags=re.IGNORECASE).strip()
+                    
+                    # Check if brand matches seller (multiple patterns)
+                    if (brand_lower in seller_lower or
+                        seller_lower in brand_lower or
+                        (seller_clean and brand_clean and (brand_clean in seller_clean or seller_clean in brand_clean))):
+                        logger.info(f"⛔ Filtered {product.get('asin')}: Brand=Seller (seller='{seller_name}' brand='{brand}')")
                         continue
             
             processed_results.append(product)

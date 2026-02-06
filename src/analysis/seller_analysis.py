@@ -11,6 +11,8 @@ class SellerInfo:
     amazon_seller: bool = False
     total_sellers: int = 0
     prices: Dict[str, float] = None
+    seller_name: str = None  # ← ADDED
+    brand_is_seller: bool = False  # ← ADDED
 
     def __post_init__(self):
         if self.prices is None:
@@ -41,6 +43,47 @@ class SellerAnalyzer:
             return any(k in n for k in amazon_indicators)
         except Exception:
             return False
+    
+    def _extract_buy_box_seller_name(self, soup) -> str:
+        """Extract the Buy Box seller name from product page"""
+        import re
+        from typing import Optional
+        
+        try:
+            # Method 1: merchant-info div
+            merchant_div = soup.find('div', {'id': 'merchant-info'})
+            if merchant_div:
+                text = merchant_div.get_text()
+                match = re.search(r'Sold by\s+([^\n.]+)', text)
+                if match:
+                    seller = match.group(1).strip()
+                    seller = re.sub(r'\s+and\s+Fulfilled.*$', '', seller, flags=re.IGNORECASE)
+                    if seller and not self._is_amazon_name(seller):
+                        return seller
+            
+            # Method 2: sellerProfileTriggerId
+            seller_link = soup.find('a', {'id': 'sellerProfileTriggerId'})
+            if seller_link:
+                seller = seller_link.get_text().strip()
+                if not self._is_amazon_name(seller):
+                    return seller
+            
+            # Method 3: Search for "Ships from and sold by"
+            for elem in soup.find_all(['div', 'span']):
+                text = elem.get_text()
+                if 'Sold by' in text or 'Ships from and sold by' in text:
+                    match = re.search(r'(?:sold by|Ships from and sold by)\s+([^\n.]+)', text, re.IGNORECASE)
+                    if match:
+                        seller = match.group(1).strip()
+                        seller = re.sub(r'\s+and\s+.*$', '', seller, flags=re.IGNORECASE)
+                        if seller and not self._is_amazon_name(seller):
+                            return seller
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error extracting seller name: {e}")
+            return None
+    
     def analyze_sellers(self, soup, asin: str = None, headers: dict = None, session=None, referer: str = None) -> SellerInfo:
         # Initialize seller info
         seller_info = SellerInfo()
@@ -54,6 +97,10 @@ class SellerAnalyzer:
         except Exception:
             buy_box_info = {'is_amazon': False, 'price': None, 'fulfillment': None}
         seller_info.amazon_seller = buy_box_info['is_amazon']
+        
+        # Extract seller name
+        seller_info.seller_name = self._extract_buy_box_seller_name(soup)
+        logger.debug(f"[ASIN {asin}] Extracted seller name: {seller_info.seller_name}")
         
         # Then analyze all sellers using sprite/AOD and fallbacks
         other_sellers = []
