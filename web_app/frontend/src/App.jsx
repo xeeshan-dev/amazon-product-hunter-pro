@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import axios from 'axios'
-import { Search, Loader2, TrendingUp, DollarSign, ShoppingCart, AlertTriangle, X as CloseIcon, Filter, Globe, ShieldAlert, Download, Calculator, Award, Info } from 'lucide-react'
+import { Search, Loader2, TrendingUp, DollarSign, ShoppingCart, AlertTriangle, X as CloseIcon, Filter, Globe, ShieldAlert, Download, Calculator, Award, Info, Eye, Bell, BarChart3 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
 import { clsx } from 'clsx'
@@ -11,7 +11,7 @@ function cn(...inputs) {
     return twMerge(clsx(inputs))
 }
 
-const API_URL = 'http://127.0.0.1:8001/api'
+const API_URL = 'http://127.0.0.1:8000/api'
 
 // Export utilities
 const exportToCSV = (products, keyword) => {
@@ -85,6 +85,12 @@ function App() {
     // NEW: UI State
     const [showSavedSearches, setShowSavedSearches] = useState(false)
     const [showWatchlist, setShowWatchlist] = useState(false)
+
+    // NEW: Tracking State
+    const [trackedProducts, setTrackedProducts] = useState([])
+    const [trackingAlerts, setTrackingAlerts] = useState([])
+    const [showTracking, setShowTracking] = useState(false)
+    const [trackingLoading, setTrackingLoading] = useState(false)
 
     const handleSearch = async (e) => {
         e.preventDefault()
@@ -233,6 +239,221 @@ function App() {
             return sortOrder === 'asc' ? aVal - bVal : bVal - aVal
         })
     }
+
+    // NEW: Fetch Tracked Products
+    const fetchTrackedProducts = async () => {
+        try {
+            setTrackingLoading(true)
+            const response = await axios.get(`${API_URL}/tracking/products`)
+            setTrackedProducts(response.data.products || [])
+        } catch (error) {
+            console.error('Failed to fetch tracked products:', error)
+        } finally {
+            setTrackingLoading(false)
+        }
+    }
+
+    // NEW: Fetch Tracking Alerts
+    const fetchTrackingAlerts = async () => {
+        try {
+            const response = await axios.get(`${API_URL}/tracking/alerts?unread_only=true`)
+            setTrackingAlerts(response.data.alerts || [])
+        } catch (error) {
+            console.error('Failed to fetch alerts:', error)
+        }
+    }
+
+    // NEW: Add Product to Tracking
+    const addToTracking = async (product) => {
+        if (trackedProducts.find(p => p.asin === product.asin)) {
+            alert('Product is already being tracked!')
+            return
+        }
+
+        try {
+            const response = await axios.post(`${API_URL}/tracking/add`, {
+                asin: product.asin,
+                product_data: {
+                    title: product.title,
+                    image_url: product.image_url,
+                    price: product.price,
+                    bsr: product.bsr,
+                    reviews: product.reviews,
+                    rating: product.rating
+                },
+                marketplace: marketplace
+            })
+
+            if (response.data.success) {
+                setTrackedProducts([...trackedProducts, response.data.product])
+                alert('Product added to tracking!')
+            }
+        } catch (error) {
+            console.error('Failed to add product to tracking:', error)
+            alert('Failed to add product to tracking')
+        }
+    }
+
+    // NEW: Remove Product from Tracking
+    const removeFromTracking = async (asin) => {
+        if (!confirm('Stop tracking this product?')) return
+
+        try {
+            await axios.delete(`${API_URL}/tracking/${asin}`)
+            setTrackedProducts(trackedProducts.filter(p => p.asin !== asin))
+        } catch (error) {
+            console.error('Failed to remove product from tracking:', error)
+            alert('Failed to remove product from tracking')
+        }
+    }
+
+    // NEW: Mark Alert as Read
+    const markAlertRead = async (alertId) => {
+        try {
+            await axios.post(`${API_URL}/tracking/alerts/read`, [alertId])
+            setTrackingAlerts(trackingAlerts.filter(a => a.id !== alertId))
+        } catch (error) {
+            console.error('Failed to mark alert as read:', error)
+        }
+    }
+
+    // Load tracked products on mount
+    useEffect(() => {
+        fetchTrackedProducts()
+        fetchTrackingAlerts()
+    }, [])
+
+    // NEW: Tracking Panel Component
+    const TrackingPanel = () => (
+        <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            className="fixed right-0 top-0 h-full w-96 bg-slate-900 border-l border-slate-700 p-6 overflow-y-auto z-50 shadow-2xl"
+        >
+            <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold flex items-center gap-2">
+                    <Eye className="w-5 h-5 text-indigo-400" />
+                    Product Tracking
+                </h3>
+                <button onClick={() => setShowTracking(false)} className="text-slate-400 hover:text-white">
+                    <CloseIcon className="w-5 h-5" />
+                </button>
+            </div>
+
+            {/* Alerts Section */}
+            {trackingAlerts.length > 0 && (
+                <div className="mb-6">
+                    <h4 className="text-sm font-medium text-slate-400 mb-3 flex items-center gap-2">
+                        <Bell className="w-4 h-4 text-yellow-400" />
+                        Unread Alerts ({trackingAlerts.length})
+                    </h4>
+                    <div className="space-y-2">
+                        {trackingAlerts.slice(0, 5).map(alert => (
+                            <div
+                                key={alert.id}
+                                className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg"
+                            >
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <div className="text-xs text-yellow-400 font-medium uppercase">{alert.alert_type.replace('_', ' ')}</div>
+                                        <div className="text-sm text-slate-300 mt-1">{alert.message}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{alert.product?.title?.substring(0, 40)}...</div>
+                                    </div>
+                                    <button
+                                        onClick={() => markAlertRead(alert.id)}
+                                        className="text-xs text-slate-500 hover:text-slate-300"
+                                    >
+                                        Dismiss
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Tracked Products */}
+            <div>
+                <h4 className="text-sm font-medium text-slate-400 mb-3">
+                    Tracked Products ({trackedProducts.length})
+                </h4>
+
+                {trackingLoading ? (
+                    <div className="flex justify-center py-8">
+                        <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
+                    </div>
+                ) : trackedProducts.length === 0 ? (
+                    <p className="text-slate-500 text-sm text-center py-8">
+                        No products being tracked.<br />
+                        Click the eye icon on any product to start tracking.
+                    </p>
+                ) : (
+                    <div className="space-y-3">
+                        {trackedProducts.map(product => (
+                            <div key={product.asin} className="p-4 bg-slate-800 rounded-lg border border-slate-700">
+                                <div className="text-sm font-medium text-white mb-2 line-clamp-2">
+                                    {product.title}
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                                    <div>
+                                        <span className="text-slate-500">Price:</span>
+                                        <span className="text-white ml-1">${product.current_price?.toFixed(2)}</span>
+                                        {product.price_change_pct !== 0 && (
+                                            <span className={`ml-1 ${product.price_change_pct < 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                ({product.price_change_pct > 0 ? '+' : ''}{product.price_change_pct?.toFixed(1)}%)
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <span className="text-slate-500">BSR:</span>
+                                        <span className="text-white ml-1">#{product.current_bsr?.toLocaleString()}</span>
+                                        {product.bsr_change_pct !== 0 && (
+                                            <span className={`ml-1 ${product.bsr_change_pct > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                ({product.bsr_change_pct > 0 ? '+' : ''}{product.bsr_change_pct?.toFixed(1)}%)
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <span className="text-slate-500">Reviews:</span>
+                                        <span className="text-white ml-1">{product.current_reviews?.toLocaleString()}</span>
+                                        {product.review_change > 0 && (
+                                            <span className="ml-1 text-green-400">(+{product.review_change})</span>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <span className="text-slate-500">Checks:</span>
+                                        <span className="text-white ml-1">{product.check_count}</span>
+                                    </div>
+                                </div>
+
+                                <div className="flex justify-between items-center text-xs">
+                                    <span className="text-slate-500">
+                                        Last checked: {product.last_checked ? new Date(product.last_checked).toLocaleDateString() : 'Never'}
+                                    </span>
+                                    <button
+                                        onClick={() => removeFromTracking(product.asin)}
+                                        className="text-red-400 hover:text-red-300"
+                                    >
+                                        Stop Tracking
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Refresh Button */}
+            <button
+                onClick={() => { fetchTrackedProducts(); fetchTrackingAlerts(); }}
+                className="w-full mt-4 px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 text-sm"
+            >
+                Refresh Tracking Data
+            </button>
+        </motion.div>
+    )
 
     // NEW: Saved Searches Panel Component
     const SavedSearchesPanel = () => (
@@ -445,6 +666,18 @@ function App() {
                         >
                             <Award className="w-4 h-4" />
                             Watchlist ({watchlist.length})
+                        </button>
+                        <button
+                            onClick={() => setShowTracking(true)}
+                            className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 transition-colors text-sm flex items-center gap-2 relative"
+                        >
+                            <Eye className="w-4 h-4" />
+                            Tracking ({trackedProducts.length})
+                            {trackingAlerts.length > 0 && (
+                                <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full text-xs flex items-center justify-center">
+                                    {trackingAlerts.length}
+                                </span>
+                            )}
                         </button>
                         {selectedForComparison.length > 0 && (
                             <button
@@ -843,7 +1076,9 @@ function App() {
                                                 onClick={() => setSelectedProduct(product)}
                                                 onToggleComparison={toggleComparison}
                                                 onAddToWatchlist={addToWatchlist}
+                                                onAddToTracking={addToTracking}
                                                 isSelected={selectedForComparison.find(p => p.asin === product.asin)}
+                                                isTracked={trackedProducts.find(p => p.asin === product.asin)}
                                             />
                                         ))}
                                 </div>
@@ -899,6 +1134,23 @@ function App() {
                     />
                 )}
             </AnimatePresence>
+
+            {/* Slide-out Panels */}
+            <AnimatePresence>
+                {showSavedSearches && <SavedSearchesPanel />}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showWatchlist && <WatchlistPanel />}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showTracking && <TrackingPanel />}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showComparison && <ComparisonModal />}
+            </AnimatePresence>
         </div>
     )
 }
@@ -920,7 +1172,7 @@ function StatCard({ title, value, icon: Icon, color }) {
     )
 }
 
-function ProductCard({ product, rank, onClick, onToggleComparison, onAddToWatchlist, isSelected }) {
+function ProductCard({ product, rank, onClick, onToggleComparison, onAddToWatchlist, onAddToTracking, isSelected, isTracked }) {
     const isVetoed = product.is_vetoed
     const isWinner = !isVetoed && product.enhanced_score >= 75 && product.margin >= 30
 
@@ -939,7 +1191,7 @@ function ProductCard({ product, rank, onClick, onToggleComparison, onAddToWatchl
                         "border-slate-700 hover:border-indigo-500/50"
             )}
         >
-            {/* NEW: Comparison & Watchlist Controls */}
+            {/* NEW: Comparison, Watchlist & Tracking Controls */}
             <div className="absolute top-3 right-3 flex gap-2 z-10">
                 <label
                     className="flex items-center gap-1 px-2 py-1 bg-slate-900/80 rounded hover:bg-slate-800 cursor-pointer"
@@ -965,6 +1217,21 @@ function ProductCard({ product, rank, onClick, onToggleComparison, onAddToWatchl
                     title="Add to Watchlist"
                 >
                     <Award className="w-4 h-4 text-yellow-400" />
+                </button>
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation()
+                        onAddToTracking(product)
+                    }}
+                    className={cn(
+                        "p-1.5 rounded",
+                        isTracked
+                            ? "bg-indigo-600/80 hover:bg-indigo-500"
+                            : "bg-slate-900/80 hover:bg-slate-800"
+                    )}
+                    title={isTracked ? "Already Tracking" : "Track Price & BSR"}
+                >
+                    <Eye className={cn("w-4 h-4", isTracked ? "text-white" : "text-indigo-400")} />
                 </button>
             </div>
 
@@ -1185,21 +1452,6 @@ function ProductDetailModal({ product, onClose }) {
                     </div>
                 </div>
             </motion.div>
-
-            {/* NEW: Saved Searches Panel */}
-            <AnimatePresence>
-                {showSavedSearches && <SavedSearchesPanel />}
-            </AnimatePresence>
-
-            {/* NEW: Watchlist Panel */}
-            <AnimatePresence>
-                {showWatchlist && <WatchlistPanel />}
-            </AnimatePresence>
-
-            {/* NEW: Comparison Modal */}
-            <AnimatePresence>
-                {showComparison && <ComparisonModal />}
-            </AnimatePresence>
         </div>
     )
 }
