@@ -56,13 +56,13 @@ function App() {
     const [minRating, setMinRating] = useState(3.0)
     const [skipRisky, setSkipRisky] = useState(true)
     const [showFilters, setShowFilters] = useState(false)
-    const [minMargin, setMinMargin] = useState(20)
+    const [minMargin, setMinMargin] = useState(10)
     const [showProfitCalc, setShowProfitCalc] = useState(false)
     const [showWinnersOnly, setShowWinnersOnly] = useState(false)
-    const [skipAmazonSeller, setSkipAmazonSeller] = useState(true)
-    const [skipBrandSeller, setSkipBrandSeller] = useState(true)
-    const [minSales, setMinSales] = useState(50)
-    const [maxSales, setMaxSales] = useState(1000)
+    const [skipAmazonSeller, setSkipAmazonSeller] = useState(false)
+    const [skipBrandSeller, setSkipBrandSeller] = useState(false)
+    const [minSales, setMinSales] = useState(10)
+    const [maxSales, setMaxSales] = useState(2000)
 
     // NEW: Saved Searches & Watchlist (with localStorage)
     const [savedSearches, setSavedSearches] = useState(() => {
