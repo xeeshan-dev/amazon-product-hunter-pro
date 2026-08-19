@@ -30,7 +30,7 @@ def client():
         }
         mock_redis.return_value = redis_mock
         
-        from web_app.backend.main_v2 import app
+        from web_app.backend.main_simple import app
         with TestClient(app) as test_client:
             yield test_client
 

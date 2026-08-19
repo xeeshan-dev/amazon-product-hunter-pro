@@ -96,9 +96,20 @@ make install
 # Start Redis (required)
 docker run -d -p 6379:6379 redis:7-alpine
 
-# Run development server
+# Run backend development server (canonical backend: web_app.backend.main_simple:app)
 make dev
+
+# Run frontend (separate terminal)
+cd web_app/frontend
+npm install
+npm run dev
 ```
+
+### Canonical runtime commands
+
+- Backend (local): `make dev`
+- Backend (Docker): `make docker-up`
+- Frontend (local): `cd web_app/frontend && npm run dev`
 
 ## 📚 API Documentation
 

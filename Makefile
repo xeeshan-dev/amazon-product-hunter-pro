@@ -30,7 +30,7 @@ install:
 	pip install pytest pytest-cov pytest-asyncio httpx flake8 black isort
 
 dev:
-	uvicorn web_app.backend.main_v2:app --reload --host 0.0.0.0 --port 8000
+	uvicorn web_app.backend.main_simple:app --reload --host 0.0.0.0 --port 8000
 
 test:
 	pytest tests/ -v

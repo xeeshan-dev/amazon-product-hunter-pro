@@ -1,15 +1,19 @@
 """
 Simple FastAPI backend for development (no Redis required)
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Path
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Dict, Any
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Literal
 import sys
 import os
 import logging
 import time
 import random
+try:
+    import redis
+except ImportError:  # pragma: no cover - optional dependency in some local setups
+    redis = None
 
 # Add src path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -93,34 +97,110 @@ def extract_brand_from_title(title: str) -> str:
 # Models
 class SearchRequest(BaseModel):
     keyword: str
-    marketplace: str = "US"
-    pages: int = 1
-    min_rating: float = 3.0
+    marketplace: Literal["US", "UK", "DE"] = "US"
+    pages: int = Field(default=1, ge=1, le=5)
+    min_rating: float = Field(default=3.0, ge=0.0, le=5.0)
     skip_risky_brands: bool = True
     skip_hazmat: bool = True
     # New filter parameters
     skip_amazon_seller: bool = True
     skip_brand_seller: bool = True
-    min_margin: float = 20.0
-    min_sales: int = 50
-    max_sales: int = 1000
+    min_margin: float = Field(default=20.0, ge=0.0, le=100.0)
+    min_sales: int = Field(default=50, ge=0)
+    max_sales: int = Field(default=1000, ge=1)
     fetch_seller_info: bool = True  # Whether to fetch detailed seller info
 
 
-# Health check
+# Service helpers
+def _get_redis_status() -> Dict[str, Any]:
+    if redis is None:
+        return {"status": "unavailable", "reason": "redis package not installed"}
+
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    try:
+        client = redis.from_url(redis_url)
+        client.ping()
+        return {"status": "healthy"}
+    except Exception as exc:  # pragma: no cover - environment dependent
+        return {"status": "degraded", "error": str(exc)}
+
+
+def _get_redis_metrics() -> Dict[str, Any]:
+    if redis is None:
+        return {"status": "unavailable"}
+
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    try:
+        client = redis.from_url(redis_url)
+        info = client.info()
+        return {
+            "status": "connected",
+            "connected_clients": info.get("connected_clients"),
+            "used_memory_human": info.get("used_memory_human"),
+            "total_commands_processed": info.get("total_commands_processed")
+        }
+    except Exception as exc:  # pragma: no cover - environment dependent
+        return {"status": "disconnected", "error": str(exc)}
+
+
+# Health/readiness/metrics
 @app.get("/health")
 async def health_check():
+    redis_status = _get_redis_status()
+    status = "healthy" if redis_status.get("status") == "healthy" else "degraded"
     return {
-        "status": "healthy",
+        "status": status,
         "version": "2.0.0",
-        "environment": "development"
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "services": {
+            "redis": redis_status
+        }
     }
+
+
+@app.get("/ready")
+async def readiness_check():
+    return {"status": "ready"}
+
+
+@app.get("/metrics")
+async def metrics():
+    return {
+        "redis": _get_redis_metrics()
+    }
+
+
+# Product details endpoint
+@app.get("/api/product/{asin}")
+async def get_product_details(asin: str = Path(..., pattern=r"^[A-Z0-9]{10}$")):
+    try:
+        product = tools["scraper"].get_product_details(asin)
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        score_result = tools["scorer"].calculate_score(product)
+        product["enhanced_score"] = score_result.total_score
+        product["score_breakdown"] = {
+            "demand": score_result.demand_pillar.score,
+            "competition": score_result.competition_pillar.score,
+            "profit": score_result.profit_pillar.score
+        }
+        product["is_vetoed"] = score_result.is_vetoed
+        product["veto_reasons"] = score_result.veto_details
+        return product
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Product fetch failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch product details")
 
 
 # Search endpoint
 @app.post("/api/search")
 async def search_products(request: SearchRequest):
     try:
+        if request.max_sales < request.min_sales:
+            raise HTTPException(status_code=422, detail="max_sales must be >= min_sales")
         logger.info(f"Search request: {request.keyword} (filters: amazon_seller={request.skip_amazon_seller}, brand_seller={request.skip_brand_seller}, sales={request.min_sales}-{request.max_sales})")
         
         # Log seller info fetching strategy

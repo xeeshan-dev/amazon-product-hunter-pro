@@ -55,4 +55,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 EXPOSE 8000
 
 # Default command (can be overridden in docker-compose)
-CMD ["uvicorn", "web_app.backend.main_v2:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "web_app.backend.main_simple:app", "--host", "0.0.0.0", "--port", "8000"]
