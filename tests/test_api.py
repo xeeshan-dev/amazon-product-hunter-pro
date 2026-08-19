@@ -3,8 +3,7 @@ API endpoint tests
 """
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import Mock, patch, MagicMock
-import sys
+from unittest.mock import patch
 import os
 
 # Set environment before imports
@@ -16,23 +15,9 @@ os.environ['JWT_SECRET_KEY'] = 'test-jwt-secret-key-minimum-32-characters'
 @pytest.fixture
 def client():
     """Create test client"""
-    with patch('redis.from_url') as mock_redis:
-        # Mock Redis
-        redis_mock = MagicMock()
-        redis_mock.ping.return_value = True
-        redis_mock.incr.return_value = 1
-        redis_mock.get.return_value = None
-        redis_mock.set.return_value = True
-        redis_mock.info.return_value = {
-            'connected_clients': 1,
-            'used_memory_human': '1M',
-            'total_commands_processed': 100
-        }
-        mock_redis.return_value = redis_mock
-        
-        from web_app.backend.main_simple import app
-        with TestClient(app) as test_client:
-            yield test_client
+    from web_app.backend.main_simple import app
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 def test_health_check(client):

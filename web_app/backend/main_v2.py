@@ -2,6 +2,7 @@
 Legacy compatibility entrypoint that re-exports the canonical backend app.
 """
 from web_app.backend.main_simple import app
+__all__ = ["app"]
 
 
 if __name__ == "__main__":
