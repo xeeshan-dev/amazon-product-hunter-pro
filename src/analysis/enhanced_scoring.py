@@ -20,6 +20,8 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from analytics.recommendations import OpportunityRecommendationEngine
+
 logger = logging.getLogger(__name__)
 
 
@@ -110,6 +112,8 @@ class EnhancedOpportunityScorer:
     MAX_BSR = 100000
     
     def __init__(self):
+        self.recommendation_engine = OpportunityRecommendationEngine()
+
         # Import risk checkers
         try:
             from risk.brand_risk import BrandRiskChecker, RiskLevel
@@ -572,42 +576,17 @@ class EnhancedOpportunityScorer:
                           competition: PillarScore,
                           profit: PillarScore,
                           total_score: float) -> Tuple[List[str], List[str], List[str]]:
-        """Generate actionable insights based on scores."""
-        strengths = []
-        weaknesses = []
-        recommendations = []
-        
-        # Analyze demand pillar
-        if demand.score >= 70:
-            strengths.append("Strong demand indicators")
-        elif demand.score < 40:
-            weaknesses.append("Weak demand signals")
-            recommendations.append("Verify demand with more research before sourcing")
-        
-        # Analyze competition pillar
-        if competition.score >= 70:
-            strengths.append("Favorable competitive landscape")
-        elif competition.score < 40:
-            weaknesses.append("Highly competitive market")
-            recommendations.append("Consider finding a less saturated niche")
-        
-        # Analyze profit pillar
-        if profit.score >= 70:
-            strengths.append("Good profit potential")
-        elif profit.score < 40:
-            weaknesses.append("Margin concerns")
-            recommendations.append("Try to source at lower cost or find higher-priced alternatives")
-        
-        # Overall recommendations
-        if total_score >= 70:
-            recommendations.append("✅ Product shows strong opportunity - proceed with sourcing research")
-        elif total_score >= 50:
-            recommendations.append("📊 Moderate opportunity - do additional research before committing")
-        else:
-            recommendations.append("⚠️ Consider alternative products with better metrics")
-        
-        return strengths, weaknesses, recommendations
+        """Generate actionable insights through the analytics boundary.
 
+        ``product`` remains accepted for compatibility with existing callers.
+        """
+        result = self.recommendation_engine.generate(
+            demand_score=demand.score,
+            competition_score=competition.score,
+            profit_score=profit.score,
+            total_score=total_score,
+        )
+        return result.strengths, result.weaknesses, result.recommendations
 
 # Convenience function for backward compatibility
 def calculate_opportunity_score(product: Dict, 

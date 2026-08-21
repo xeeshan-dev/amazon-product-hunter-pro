@@ -1,4 +1,3 @@
-fastapi
-uvicorn
-pydantic
-python-multipart
+# Backend-local install convenience.
+# The canonical backend runtime dependencies live at the repository root.
+-r ../../requirements.txt

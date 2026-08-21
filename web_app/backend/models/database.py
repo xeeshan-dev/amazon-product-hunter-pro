@@ -7,13 +7,19 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import os
+from config.settings import get_settings
 
-# Database path
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'amazon_hunter.db')
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+settings = get_settings()
+database_url = settings.TRACKING_DATABASE_URL
+if database_url.startswith("sqlite:///"):
+    db_path = database_url.replace("sqlite:///", "", 1)
+    if not os.path.isabs(db_path):
+        db_path = os.path.abspath(db_path)
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    database_url = f"sqlite:///{db_path}"
 
 # Create engine
-engine = create_engine(f'sqlite:///{DB_PATH}', echo=False)
+engine = create_engine(database_url, echo=False)
 Base = declarative_base()
 Session = sessionmaker(bind=engine)
 

@@ -5,6 +5,7 @@ import pytest
 import sys
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 # Add src to path
 project_root = Path(__file__).parent.parent
@@ -17,6 +18,7 @@ os.environ['DEBUG'] = 'true'
 os.environ['SECRET_KEY'] = 'test-secret-key-minimum-32-characters-long'
 os.environ['JWT_SECRET_KEY'] = 'test-jwt-secret-key-minimum-32-characters'
 os.environ['DATABASE_URL'] = 'sqlite:///./test.db'
+os.environ['TRACKING_DATABASE_URL'] = 'sqlite:///./test_tracking.db'
 os.environ['REDIS_URL'] = 'redis://localhost:6379/15'  # Use different DB for tests
 
 
@@ -31,6 +33,23 @@ def mock_redis():
     redis_mock.delete.return_value = True
     redis_mock.incr.return_value = 1
     return redis_mock
+
+
+@pytest.fixture(autouse=True)
+def block_live_http(request):
+    """Prevent accidental live HTTP requests in automated tests."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+
+    def blocked_request(*args, **kwargs):
+        raise AssertionError(
+            "Live HTTP requests are disabled in pytest. "
+            "Mock the request or mark the test as integration."
+        )
+
+    with patch("requests.sessions.Session.request", side_effect=blocked_request):
+        yield
 
 
 @pytest.fixture

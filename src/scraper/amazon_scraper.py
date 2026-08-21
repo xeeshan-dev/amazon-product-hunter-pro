@@ -12,6 +12,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from config.settings import Config
+from analytics.sales_estimator import BSRSalesEstimator, SalesEstimateInput
 from analysis.seller_analysis import SellerAnalyzer
 
 class AmazonScraper:
@@ -19,6 +20,7 @@ class AmazonScraper:
         self.ua = UserAgent()
         self.base_url = base_url or Config.BASE_URL
         self.seller_analyzer = SellerAnalyzer()
+        self.sales_estimator = BSRSalesEstimator()
         self.session = requests.Session()
         
     def _get_headers(self) -> Dict:
@@ -661,39 +663,13 @@ class AmazonScraper:
             product['competition_trend'] = 'Stable'
 
     def _estimate_sales_from_bsr(self, bsr: int, category: str) -> int:
-        """
-        Estimate monthly sales using a logarithmic regression model.
-        Formula: Sales = C * (BSR ^ -k)
-        """
+        """Compatibility wrapper around the analytics-owned sales estimator."""
         try:
-            if not bsr or bsr <= 0:
-                return 0
-                
-            # Category Constants (C, k)
-            category_curves = {
-                "Health & Household": (60000, 0.4),
-                "Home & Kitchen": (50000, 0.4),
-                "Beauty & Personal Care": (55000, 0.4),
-                "Sports & Outdoors": (40000, 0.4),
-                "Pet Supplies": (45000, 0.4),
-                "Toys & Games": (45000, 0.45),
-                "Electronics": (35000, 0.35),
-                "default": (40000, 0.4)
-            }
-            
-            C, k = category_curves.get(category, category_curves["default"])
-            
-            if bsr < 100:
-                # Top 100 is often linear or exponential
-                estimated_sales = 3000 + (100 - bsr) * 50
-            else:
-                import math
-                estimated_sales = int(C * math.pow(bsr, -k))
-                
-            estimated_sales = min(estimated_sales, 50000)
-            return max(0, int(estimated_sales))
-            
-        except Exception:
+            estimate = self.sales_estimator.estimate(
+                SalesEstimateInput(bsr=int(bsr), category=category)
+            )
+            return estimate.monthly_sales
+        except (TypeError, ValueError):
             return 0
 
     def _calculate_fba_fees(self, price: float, dimensions: Optional[Dict] = None) -> float:

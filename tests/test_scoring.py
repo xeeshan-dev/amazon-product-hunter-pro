@@ -7,6 +7,8 @@ from analysis.fba_calculator import FBAFeeCalculator, ProductDimensions
 from risk.brand_risk import BrandRiskChecker, RiskLevel
 from risk.hazmat_detector import HazmatDetector
 
+pytestmark = pytest.mark.unit
+
 
 def test_enhanced_scorer_basic(sample_product):
     """Test basic scoring functionality"""

@@ -2,35 +2,15 @@
 Email Service for Product Tracking Alerts
 Supports multiple email providers: SMTP (Gmail, etc.) and SendGrid
 
-Configuration via environment variables:
-- EMAIL_PROVIDER: 'smtp' or 'sendgrid'
-- SMTP_HOST: SMTP server host (default: smtp.gmail.com)
-- SMTP_PORT: SMTP server port (default: 587)
-- SMTP_USER: Your email address
-- SMTP_PASSWORD: Your email password or app-specific password
-- SENDGRID_API_KEY: SendGrid API key (if using SendGrid)
-- EMAIL_FROM: Sender email address
-- EMAIL_FROM_NAME: Sender name (default: Amazon Hunter Pro)
+Configuration is loaded through config.settings.
 """
-import os
 import logging
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional, List
 from dataclasses import dataclass
-from pathlib import Path
-
-# Load .env file
-try:
-    from dotenv import load_dotenv
-    # Find .env file in backend directory
-    env_path = Path(__file__).parent.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-        print(f"Loaded email config from {env_path}")
-except ImportError:
-    pass  # dotenv not installed, use system env vars
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +29,17 @@ class EmailConfig:
     
     @classmethod
     def from_env(cls) -> 'EmailConfig':
-        """Load configuration from environment variables"""
+        """Load configuration from canonical application settings."""
+        settings = get_settings()
         return cls(
-            provider=os.getenv('EMAIL_PROVIDER', 'smtp'),
-            smtp_host=os.getenv('SMTP_HOST', 'smtp.gmail.com'),
-            smtp_port=int(os.getenv('SMTP_PORT', '587')),
-            smtp_user=os.getenv('SMTP_USER', ''),
-            smtp_password=os.getenv('SMTP_PASSWORD', ''),
-            sendgrid_api_key=os.getenv('SENDGRID_API_KEY', ''),
-            from_email=os.getenv('EMAIL_FROM', ''),
-            from_name=os.getenv('EMAIL_FROM_NAME', 'Amazon Hunter Pro')
+            provider=settings.EMAIL_PROVIDER,
+            smtp_host=settings.SMTP_HOST,
+            smtp_port=settings.SMTP_PORT,
+            smtp_user=settings.SMTP_USER,
+            smtp_password=settings.SMTP_PASSWORD,
+            sendgrid_api_key=settings.SENDGRID_API_KEY,
+            from_email=settings.EMAIL_FROM,
+            from_name=settings.EMAIL_FROM_NAME,
         )
 
 
