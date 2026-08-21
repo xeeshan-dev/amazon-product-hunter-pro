@@ -5,13 +5,14 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
 import { clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import ChatInterface from './components/ChatInterface'
 
 // Utility for class merging
 function cn(...inputs) {
     return twMerge(clsx(inputs))
 }
 
-const API_URL = 'http://127.0.0.1:8000/api'
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 
 // Export utilities
 const exportToCSV = (products, keyword) => {
@@ -91,6 +92,14 @@ function App() {
     const [trackingAlerts, setTrackingAlerts] = useState([])
     const [showTracking, setShowTracking] = useState(false)
     const [trackingLoading, setTrackingLoading] = useState(false)
+    const [trackingToken, setTrackingToken] = useState(() => localStorage.getItem('trackingAccessToken'))
+    const [showAuth, setShowAuth] = useState(false)
+    const [authMode, setAuthMode] = useState('login')
+    const [authEmail, setAuthEmail] = useState('')
+    const [authPassword, setAuthPassword] = useState('')
+    const [authFullName, setAuthFullName] = useState('')
+    const [authError, setAuthError] = useState('')
+    const [authLoading, setAuthLoading] = useState(false)
 
     const handleSearch = async (e) => {
         e.preventDefault()
@@ -240,11 +249,49 @@ function App() {
         })
     }
 
+    const trackingRequest = (config) => axios({
+        ...config,
+        headers: {
+            ...config.headers,
+            Authorization: `Bearer ${trackingToken}`
+        }
+    })
+
+    const requireTrackingAuth = () => {
+        if (trackingToken) return true
+        setShowAuth(true)
+        return false
+    }
+
+    const submitAuth = async (event) => {
+        event.preventDefault()
+        setAuthError('')
+        setAuthLoading(true)
+        try {
+            const payload = { email: authEmail, password: authPassword }
+            if (authMode === 'register' && authFullName.trim()) payload.full_name = authFullName.trim()
+            const response = await axios.post(`${API_URL}/auth/${authMode}`, payload)
+            const token = response.data.access_token
+            localStorage.setItem('trackingAccessToken', token)
+            setTrackingToken(token)
+            setAuthPassword('')
+            setShowAuth(false)
+        } catch (error) {
+            setAuthError(error.response?.data?.detail || 'Authentication failed. Please try again.')
+        } finally {
+            setAuthLoading(false)
+        }
+    }
+
     // NEW: Fetch Tracked Products
     const fetchTrackedProducts = async () => {
+        if (!trackingToken) {
+            setTrackedProducts([])
+            return
+        }
         try {
             setTrackingLoading(true)
-            const response = await axios.get(`${API_URL}/tracking/products`)
+            const response = await trackingRequest({ url: `${API_URL}/tracking/products` })
             setTrackedProducts(response.data.products || [])
         } catch (error) {
             console.error('Failed to fetch tracked products:', error)
@@ -255,8 +302,12 @@ function App() {
 
     // NEW: Fetch Tracking Alerts
     const fetchTrackingAlerts = async () => {
+        if (!trackingToken) {
+            setTrackingAlerts([])
+            return
+        }
         try {
-            const response = await axios.get(`${API_URL}/tracking/alerts?unread_only=true`)
+            const response = await trackingRequest({ url: `${API_URL}/tracking/alerts?unread_only=true` })
             setTrackingAlerts(response.data.alerts || [])
         } catch (error) {
             console.error('Failed to fetch alerts:', error)
@@ -265,23 +316,28 @@ function App() {
 
     // NEW: Add Product to Tracking
     const addToTracking = async (product) => {
+        if (!requireTrackingAuth()) return
         if (trackedProducts.find(p => p.asin === product.asin)) {
             alert('Product is already being tracked!')
             return
         }
 
         try {
-            const response = await axios.post(`${API_URL}/tracking/add`, {
-                asin: product.asin,
-                product_data: {
-                    title: product.title,
-                    image_url: product.image_url,
-                    price: product.price,
-                    bsr: product.bsr,
-                    reviews: product.reviews,
-                    rating: product.rating
+            const response = await trackingRequest({
+                method: 'post',
+                url: `${API_URL}/tracking/add`,
+                data: {
+                    asin: product.asin,
+                    product_data: {
+                        title: product.title,
+                        image_url: product.image_url,
+                        price: product.price,
+                        bsr: product.bsr,
+                        reviews: product.reviews,
+                        rating: product.rating
+                    },
+                    marketplace: marketplace
                 },
-                marketplace: marketplace
             })
 
             if (response.data.success) {
@@ -296,10 +352,11 @@ function App() {
 
     // NEW: Remove Product from Tracking
     const removeFromTracking = async (asin) => {
+        if (!requireTrackingAuth()) return
         if (!confirm('Stop tracking this product?')) return
 
         try {
-            await axios.delete(`${API_URL}/tracking/${asin}`)
+            await trackingRequest({ method: 'delete', url: `${API_URL}/tracking/${asin}` })
             setTrackedProducts(trackedProducts.filter(p => p.asin !== asin))
         } catch (error) {
             console.error('Failed to remove product from tracking:', error)
@@ -309,8 +366,13 @@ function App() {
 
     // NEW: Mark Alert as Read
     const markAlertRead = async (alertId) => {
+        if (!requireTrackingAuth()) return
         try {
-            await axios.post(`${API_URL}/tracking/alerts/read`, [alertId])
+            await trackingRequest({
+                method: 'post',
+                url: `${API_URL}/tracking/alerts/read`,
+                data: [alertId]
+            })
             setTrackingAlerts(trackingAlerts.filter(a => a.id !== alertId))
         } catch (error) {
             console.error('Failed to mark alert as read:', error)
@@ -321,7 +383,7 @@ function App() {
     useEffect(() => {
         fetchTrackedProducts()
         fetchTrackingAlerts()
-    }, [])
+    }, [trackingToken])
 
     // NEW: Tracking Panel Component
     const TrackingPanel = () => (
@@ -668,7 +730,7 @@ function App() {
                             Watchlist ({watchlist.length})
                         </button>
                         <button
-                            onClick={() => setShowTracking(true)}
+                            onClick={() => trackingToken ? setShowTracking(true) : setShowAuth(true)}
                             className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 transition-colors text-sm flex items-center gap-2 relative"
                         >
                             <Eye className="w-4 h-4" />
@@ -690,6 +752,90 @@ function App() {
                         )}
                     </div>
                 </motion.div>
+
+                <AnimatePresence>
+                    {showAuth && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+                        >
+                            <motion.form
+                                initial={{ opacity: 0, y: 12 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                onSubmit={submitAuth}
+                                className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-2xl"
+                            >
+                                <div className="mb-5 flex items-start justify-between gap-4">
+                                    <div>
+                                        <h2 className="text-lg font-semibold text-white">
+                                            {authMode === 'login' ? 'Sign in to tracking' : 'Create tracking account'}
+                                        </h2>
+                                        <p className="mt-1 text-sm text-slate-400">Keep tracked products and alerts private to your account.</p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAuth(false)}
+                                        className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                                        aria-label="Close authentication dialog"
+                                    >
+                                        <CloseIcon className="h-5 w-5" />
+                                    </button>
+                                </div>
+
+                                <div className="space-y-3">
+                                    {authMode === 'register' && (
+                                        <input
+                                            value={authFullName}
+                                            onChange={(event) => setAuthFullName(event.target.value)}
+                                            placeholder="Name (optional)"
+                                            maxLength="255"
+                                            className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400"
+                                        />
+                                    )}
+                                    <input
+                                        type="email"
+                                        value={authEmail}
+                                        onChange={(event) => setAuthEmail(event.target.value)}
+                                        placeholder="Email address"
+                                        required
+                                        className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400"
+                                    />
+                                    <input
+                                        type="password"
+                                        value={authPassword}
+                                        onChange={(event) => setAuthPassword(event.target.value)}
+                                        placeholder="Password"
+                                        minLength={authMode === 'register' ? 12 : 1}
+                                        required
+                                        className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400"
+                                    />
+                                </div>
+
+                                {authError && <p className="mt-3 text-sm text-red-400">{authError}</p>}
+
+                                <button
+                                    type="submit"
+                                    disabled={authLoading}
+                                    className="mt-5 flex w-full items-center justify-center rounded bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {authLoading ? 'Please wait...' : authMode === 'login' ? 'Sign in' : 'Create account'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setAuthMode(authMode === 'login' ? 'register' : 'login')
+                                        setAuthError('')
+                                    }}
+                                    className="mt-3 w-full text-sm text-cyan-300 hover:text-cyan-200"
+                                >
+                                    {authMode === 'login' ? 'Create an account' : 'I already have an account'}
+                                </button>
+                            </motion.form>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
 
                 {/* Search & Filters */}
                 <div className="max-w-2xl mx-auto relative z-10 space-y-4">
@@ -1151,6 +1297,9 @@ function App() {
             <AnimatePresence>
                 {showComparison && <ComparisonModal />}
             </AnimatePresence>
+
+            {/* AI Chat Interface */}
+            <ChatInterface />
         </div>
     )
 }
