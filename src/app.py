@@ -1,11 +1,17 @@
 import streamlit as st
 import pandas as pd
-from scraper.amazon_scraper import AmazonScraper
+import asyncio
 from analysis.scoring import ProductScorer
 from analysis.sentiment import SentimentAnalyzer
 from analysis.seller_analysis import SellerInfo
 from analysis.market_analysis import MarketAnalyzer
+from providers.amazon_html_provider import AmazonHTMLProvider
 import logging
+
+
+def run_provider(coroutine):
+    """Run an async provider operation from Streamlit's synchronous callbacks."""
+    return asyncio.run(coroutine)
 
 # Configure page
 st.set_page_config(
@@ -572,7 +578,7 @@ def main():
                 status_text.text("🔧 Initializing components...")
                 progress_bar.progress(10)
                 
-                scraper = AmazonScraper(base_url=market_base)
+                provider = AmazonHTMLProvider(base_url=market_base)
                 scorer = ProductScorer()
                 sentiment_analyzer = SentimentAnalyzer()
                 
@@ -581,7 +587,7 @@ def main():
                 progress_bar.progress(30)
                 
                 logger.info(f"Starting search for keyword: {keyword}")
-                products = scraper.search_products(keyword, pages=2)
+                products = run_provider(provider.search_products(keyword, pages=2))
                 logger.info(f"Found {len(products)} products in initial search")
                 
                 # Initialize market analyzer
@@ -617,7 +623,7 @@ def main():
                     
                     # Check seller requirements
                     if product.get('asin'):
-                        seller_summary = scraper.get_seller_summary(product['asin'])
+                        seller_summary = run_provider(provider.get_sellers(product['asin']))
                         fba_count = seller_summary.get('fba_count', 0)
                         fbm_count = seller_summary.get('fbm_count', 0)
                         amazon_seller = seller_summary.get('amazon_seller', False)

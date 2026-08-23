@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = 3600
     CACHE_ENABLED: bool = True
 
+    # Product observation freshness
+    OBSERVATION_FRESH_HOURS: int = 6
+    OBSERVATION_STALE_HOURS: int = 48
+
     # Background jobs
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"

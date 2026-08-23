@@ -1,0 +1,1 @@
+"""Canonical FastAPI backend package (entrypoint: web_app.backend.main:app)."""

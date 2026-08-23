@@ -16,21 +16,106 @@ from analytics.sales_estimator import BSRSalesEstimator, SalesEstimateInput
 from analysis.seller_analysis import SellerAnalyzer
 
 class AmazonScraper:
+    # Marketplace-specific locale preferences, keyed by TLD fragment.
+    MARKETPLACE_PREFS = {
+        'amazon.co.uk': {'language': 'en-GB,en;q=0.9', 'currency': 'GBP'},
+        'amazon.de': {'language': 'de-DE,de;q=0.9', 'currency': 'EUR'},
+    }
+    DEFAULT_PREFS = {'language': 'en-US,en;q=0.9', 'currency': 'USD'}
+
+    # Markers used by Amazon for bot-challenge / interstitial responses.
+    BLOCK_MARKERS = (
+        'Enter the characters',
+        'api-services-support@amazon',
+        'Robot Check',
+        'Sorry! Something went wrong',
+    )
+
     def __init__(self, base_url: Optional[str] = None):
         self.ua = UserAgent()
         self.base_url = base_url or Config.BASE_URL
+        self.prefs = self._resolve_marketplace_prefs()
         self.seller_analyzer = SellerAnalyzer()
         self.sales_estimator = BSRSalesEstimator()
+        self._new_session()
+
+    def _new_session(self):
+        """Create a session, applying configured proxy settings if present."""
+        from config.settings import get_settings
+        settings = get_settings()
         self.session = requests.Session()
-        
+        proxy_url = settings.PROXY_URL or settings.BRIGHT_DATA_PROXY_URL
+        if settings.USE_PROXY and proxy_url:
+            self.session.proxies = {'http': proxy_url, 'https': proxy_url}
+
+    def _resolve_marketplace_prefs(self) -> Dict:
+        for marker, prefs in self.MARKETPLACE_PREFS.items():
+            if marker in self.base_url:
+                return prefs
+        return dict(self.DEFAULT_PREFS)
+
     def _get_headers(self) -> Dict:
         return {
-            'User-Agent': self.ua.random,
+            # One consistent UA per session; rotated between retry attempts.
+            'User-Agent': getattr(self, '_ua_string', None) or self._rotate_user_agent(),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Language': self.prefs['language'],
             'Connection': 'keep-alive',
-            'Cookie': 'lc-main=en_US; i18n-prefs=USD; ubid-main=130-0000000-0000000',
+            'Upgrade-Insecure-Requests': '1',
+            'Cookie': f"i18n-prefs={self.prefs['currency']}",
         }
+
+    def _rotate_user_agent(self) -> str:
+        self._ua_string = self.ua.random
+        return self._ua_string
+
+    @staticmethod
+    def _is_blocked(response) -> bool:
+        """Detect bot challenges / interstitials that look like HTTP success."""
+        if response.status_code in (503, 429):
+            return True
+        try:
+            text = response.text[:20000]
+        except Exception:
+            return False
+        if any(marker in text for marker in AmazonScraper.BLOCK_MARKERS):
+            return True
+        # Challenge/interstitial pages are tiny compared with real result pages.
+        return len(response.content) < 30_000
+
+    def _fetch_with_retries(self, url: str):
+        """Fetch a page with backoff + fresh fingerprints on block pages."""
+        from config.settings import get_settings
+        settings = get_settings()
+        attempts = max(1, settings.MAX_RETRIES)
+        last_response = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self.session.get(
+                    url,
+                    headers=self._get_headers(),
+                    timeout=min(settings.REQUEST_TIMEOUT, 20),
+                )
+                last_response = response
+                if response.ok and not self._is_blocked(response):
+                    return response
+                logger.warning(
+                    "Amazon block/challenge suspected (%s, status=%s, bytes=%s) "
+                    "for %s - attempt %s/%s",
+                    self.base_url,
+                    response.status_code,
+                    len(response.content),
+                    url,
+                    attempt,
+                    attempts,
+                )
+            except Exception as exc:
+                logger.warning("Request failed for %s (attempt %s/%s): %s", url, attempt, attempts, exc)
+            self._new_session()  # fresh cookies/fingerprint (proxy re-applied)
+            if attempt < attempts:
+                time.sleep(min(2 ** attempt, 8) + random.uniform(0, 1))
+        return last_response
+
     
     def search_products(self, keyword: str, pages: int = 1, category: str = None, is_asin: bool = False) -> List[Dict]:
         """Fast product search - optimized for speed."""
@@ -54,7 +139,15 @@ class AmazonScraper:
                         url += f"&rh=n%3A{self._get_category_id(category)}"
                     url += f"&page={page}"
                     
-                    response = self.session.get(url, headers=self._get_headers(), timeout=10)
+                    response = self._fetch_with_retries(url)
+                    if response is None or not response.ok:
+                        logger.error(
+                            "Amazon returned no usable response for '%s' on %s - "
+                            "marketplace may be temporarily blocking this client",
+                            keyword,
+                            self.base_url,
+                        )
+                        break
                     soup = BeautifulSoup(response.content, 'html.parser')
                     
                     items = soup.find_all('div', {'data-component-type': 's-search-result'})
@@ -395,7 +488,8 @@ class AmazonScraper:
             if offscreen:
                 price_text = offscreen.get_text().strip()
                 # Match $XX.XX format exactly
-                match = re.match(r'^\$?([\d,]+\.\d{2})$', price_text.replace('$', '$'))
+                # Currency-agnostic: £12.99, US$12.99, CDN$1,299.00, 12.99 €
+                match = re.match(r'^[^\d]*([\d,]+\.\d{2})[^\d]*$', price_text)
                 if match:
                     price = float(match.group(1).replace(',', ''))
                     if 0.50 <= price <= 5000:

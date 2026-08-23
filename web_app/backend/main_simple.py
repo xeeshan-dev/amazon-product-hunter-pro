@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(parent_dir, 'src'))
 sys.path.insert(0, parent_dir)
 
 # Import analysis modules
-from scraper.amazon_scraper import AmazonScraper
+from providers.amazon_html_provider import AmazonHTMLProvider
 from analysis.enhanced_scoring import EnhancedOpportunityScorer
 from analysis.fba_calculator import FBAFeeCalculator
 from risk.brand_risk import BrandRiskChecker
@@ -47,7 +47,7 @@ app.add_middleware(
 
 # Initialize tools
 tools = {
-    'scraper': AmazonScraper(),
+    'product_provider': AmazonHTMLProvider(),
     'scorer': EnhancedOpportunityScorer(),
     'fee_calc': FBAFeeCalculator(),
     'brand_checker': BrandRiskChecker(),
@@ -136,9 +136,9 @@ async def search_products(request: SearchRequest):
             "DE": "https://www.amazon.de"
         }
         
-        # Scrape
-        scraper = AmazonScraper(base_url=marketplace_urls.get(request.marketplace))
-        products = scraper.search_products(request.keyword, pages=request.pages)
+        # Collect through the provider boundary.
+        provider = AmazonHTMLProvider(base_url=marketplace_urls.get(request.marketplace))
+        products = await provider.search_products(request.keyword, pages=request.pages)
         
         logger.info(f"Found {len(products)} products")
         
@@ -229,7 +229,7 @@ async def search_products(request: SearchRequest):
                 try:
                     asin = product.get('asin')
                     if asin:
-                        seller_summary = scraper.get_seller_summary(asin)
+                        seller_summary = await provider.get_sellers(asin)
                         product['seller_info'] = seller_summary
                         
                         # Extract brand from title if not available

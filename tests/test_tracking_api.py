@@ -69,6 +69,9 @@ def test_tracking_is_scoped_to_the_authenticated_user(tracking_client):
     assert tracked["asin"] == "B08TRACK01"
     assert tracked["alert_settings"]["price_drop_pct"] == 8.0
     assert tracked["notes"] == "Watch price"
+    assert tracked["current_opportunity_score"] is None
+    assert tracked["trends"]["price"] == "Insufficient Data"
+    assert tracked["data_quality"]["status"] == "Fresh"
 
     response = tracking_client.get(
         "/api/tracking/products", headers=second_user_headers

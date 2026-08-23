@@ -22,6 +22,7 @@ from models.database import (
     ProductAlert, 
     get_session
 )
+from providers.base import ProductDataProvider
 
 # Import email service for sending alerts
 try:
@@ -38,14 +39,14 @@ logger = logging.getLogger(__name__)
 class TrackingService:
     """Service for managing product tracking"""
     
-    def __init__(self, scraper=None):
+    def __init__(self, provider: Optional[ProductDataProvider] = None):
         """
         Initialize tracking service
         
         Args:
-            scraper: AmazonScraper instance for fetching product data
+            provider: Product data provider for fetching normalized product data
         """
-        self.scraper = scraper
+        self.provider = provider
     
     def add_product(
         self, 
@@ -279,7 +280,7 @@ class TrackingService:
         finally:
             session.close()
     
-    def check_products(self) -> Dict[str, Any]:
+    async def check_products(self) -> Dict[str, Any]:
         """
         Check all active tracked products for updates
         This should be called periodically (e.g., daily)
@@ -287,8 +288,8 @@ class TrackingService:
         Returns:
             Summary of check results
         """
-        if not self.scraper:
-            raise ValueError("Scraper not configured for tracking service")
+        if not self.provider:
+            raise ValueError("Product provider not configured for tracking service")
         
         session = get_session()
         results = {
@@ -304,7 +305,7 @@ class TrackingService:
             for product in products:
                 try:
                     # Fetch current data
-                    current_data = self.scraper.get_product_details(product.asin)
+                    current_data = await self.provider.get_product(product.asin)
                     if not current_data:
                         continue
                     

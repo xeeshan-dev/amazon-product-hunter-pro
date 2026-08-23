@@ -1,0 +1,1 @@
+"""Web application package marker (canonical FastAPI backend lives in backend/)."""

@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from web_app.backend.db.models import Base, Product, ProductSnapshot, Search, SearchResult
+from web_app.backend.db.session import SessionLocal, engine
 
 pytestmark = pytest.mark.api
 
@@ -17,6 +19,8 @@ os.environ["JWT_SECRET_KEY"] = "test-jwt-secret-key-minimum-32-characters"
 @pytest.fixture
 def client():
     """Create a test client for the canonical backend."""
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
     with patch("redis.from_url") as mock_redis:
         redis_mock = MagicMock()
         redis_mock.ping.return_value = True
@@ -34,6 +38,7 @@ def client():
 
         with TestClient(app) as test_client:
             yield test_client
+    Base.metadata.drop_all(bind=engine)
 
 
 def test_health_check(client):
@@ -89,6 +94,17 @@ def test_search_success(mock_search, client, sample_search_results):
     assert "summary" in data
     assert "results" in data
     assert "metadata" in data
+    assert "_search_confidence" not in data["results"][0]
+    assert "_search_recommendation" not in data["results"][0]
+
+    db = SessionLocal()
+    try:
+        assert db.query(Search).one().user_id is None
+        assert db.query(Product).count() == len(data["results"])
+        assert db.query(ProductSnapshot).count() == len(data["results"])
+        assert db.query(SearchResult).count() == len(data["results"])
+    finally:
+        db.close()
 
 
 def test_keywords_endpoint(client):

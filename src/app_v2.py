@@ -12,17 +12,18 @@ Enhanced with FREE tools:
 
 import streamlit as st
 import pandas as pd
+import asyncio
 import sys
 import os
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from scraper.amazon_scraper import AmazonScraper
 from analysis.scoring import ProductScorer
 from analysis.sentiment import SentimentAnalyzer
 from analysis.seller_analysis import SellerInfo
 from analysis.market_analysis import MarketAnalyzer
+from providers.amazon_html_provider import AmazonHTMLProvider
 
 # Import enhanced modules
 from analysis.enhanced_scoring import EnhancedOpportunityScorer, ScoreStatus
@@ -33,6 +34,11 @@ from risk.brand_risk import BrandRiskChecker, RiskLevel
 from risk.hazmat_detector import HazmatDetector
 
 import logging
+
+
+def run_provider(coroutine):
+    """Run an async provider operation from Streamlit's synchronous callbacks."""
+    return asyncio.run(coroutine)
 
 # Configure page
 st.set_page_config(
@@ -696,11 +702,11 @@ def main():
                 
                 with st.spinner("Hunting..."):
                     try:
-                        # Initialize scraper
+                        # Initialize provider
                         status.text("🔧 Initializing...")
                         progress.progress(10)
                         
-                        scraper = AmazonScraper(base_url=market_base)
+                        provider = AmazonHTMLProvider(base_url=market_base)
                         scorer = ProductScorer()
                         market_analyzer = MarketAnalyzer()
                         
@@ -708,7 +714,7 @@ def main():
                         status.text("🕷️ Scraping Amazon...")
                         progress.progress(30)
                         
-                        products = scraper.search_products(keyword, pages=2)
+                        products = run_provider(provider.search_products(keyword, pages=2))
                         logger.info(f"Found {len(products)} initial products")
                         
                         # Fast filtering - NO seller API calls

@@ -25,11 +25,27 @@ from analytics.risk import ProductRiskAnalyzer
 from config.settings import get_settings
 from risk.brand_risk import BrandRiskChecker
 from risk.hazmat_detector import HazmatDetector
-from scraper.amazon_scraper import AmazonScraper
-from services.auth_service import AuthService
-from services.canonical_tracking_service import CanonicalTrackingService
-from services.llm_service import LLMService
-from services.search_pipeline import SearchPipeline
+from providers.amazon_html_provider import AmazonHTMLProvider
+from web_app.backend.services.auth_service import AuthService
+from web_app.backend.services.canonical_tracking_service import CanonicalTrackingService
+from web_app.backend.services.llm_service import LLMService
+from web_app.backend.services.search_pipeline import SearchPipeline
+from web_app.backend.services.search_persistence_service import (
+    SearchPersistenceError,
+    SearchPersistenceService,
+)
+from web_app.backend.services.product_analyzer_service import (
+    ProductAnalyzerService,
+    ProductNotFoundError,
+)
+from web_app.backend.services.history_service import HistoryService
+from web_app.backend.services.search_history_service import (
+    SearchHistoryService,
+    SearchNotFoundError,
+)
+from web_app.backend.services.usage_service import UsageService
+from web_app.backend.services.plan_service import PlanService
+from web_app.backend.services.market_intelligence_service import MarketIntelligenceService
 from web_app.backend.db.models import User
 from web_app.backend.db.session import get_db
 
@@ -53,21 +69,33 @@ app.add_middleware(
 )
 
 tools = {
-    "scraper": AmazonScraper(),
+    "product_provider": AmazonHTMLProvider(),
     "scorer": EnhancedOpportunityScorer(),
     "fee_calc": FBAFeeCalculator(),
     "brand_checker": BrandRiskChecker(),
     "hazmat": HazmatDetector(),
     "keyword_tool": FreeKeywordTool(),
     "llm": LLMService(),
-    "tracking": CanonicalTrackingService(),
     "auth": AuthService(),
+    "usage": UsageService(),
+    "plans": PlanService(),
+    "market_intelligence": MarketIntelligenceService(),
 }
+tools["tracking"] = CanonicalTrackingService(provider=tools["product_provider"])
+tools["history"] = HistoryService()
 tools["search_pipeline"] = SearchPipeline(
     scorer=tools["scorer"],
     profitability=ProfitabilityAnalyzer(tools["fee_calc"]),
     risk_analyzer=ProductRiskAnalyzer(tools["brand_checker"], tools["hazmat"]),
+    persistence_service=SearchPersistenceService(),
+    history_service=tools["history"],
 )
+tools["product_analyzer"] = ProductAnalyzerService(
+    provider=tools["product_provider"],
+    pipeline=tools["search_pipeline"],
+    history_service=tools["history"],
+)
+tools["search_history"] = SearchHistoryService()
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -148,6 +176,16 @@ def get_current_user(
     return tools["auth"].get_user_from_token(db, credentials.credentials)
 
 
+def get_optional_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Resolve a supplied bearer token without requiring one for public search."""
+    if credentials is None:
+        return None
+    return tools["auth"].get_user_from_token(db, credentials.credentials)
+
+
 @app.get("/health")
 async def health_check():
     return {
@@ -187,13 +225,125 @@ async def current_user(user: User = Depends(get_current_user)):
     return {"user": serialize_user(user)}
 
 
+@app.get("/api/account")
+async def get_account(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return {"user": serialize_user(user), "usage": tools["usage"].summary(db, user.id), "limits": tools["plans"].limits_for(user.plan)}
+
+
 @app.post("/api/search")
-async def search_products(request: SearchRequest):
+async def search_products(
+    request: SearchRequest,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_optional_current_user),
+):
     try:
-        return await tools["search_pipeline"].run(request)
-    except Exception as exc:
-        logger.error("Search failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(exc))
+        response = await tools["search_pipeline"].run(
+            request,
+            db=db,
+            user_id=user.id if user is not None else None,
+        )
+        tools["usage"].record(db, "search", user.id if user else None, {"marketplace": request.marketplace})
+        return response
+    except SearchPersistenceError as exc:
+        logger.error("Search persistence failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Unable to save search results")
+    except Exception:
+        logger.exception("Search failed")
+        raise HTTPException(status_code=500, detail="Search failed")
+
+
+@app.get("/api/products/{asin}")
+async def get_product_analysis(
+    asin: str,
+    marketplace: Literal["US", "UK", "DE"] = "US",
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_optional_current_user),
+):
+    try:
+        response = await tools["product_analyzer"].analyze(db, asin, marketplace)
+        tools["usage"].record(
+            db,
+            "product_analysis",
+            user.id if user else None,
+            {"asin": asin, "marketplace": marketplace},
+        )
+        return response
+    except ProductNotFoundError:
+        raise HTTPException(status_code=404, detail="Product not found")
+    except Exception:
+        db.rollback()
+        logger.exception("Product analysis failed for %s", asin)
+        raise HTTPException(status_code=500, detail="Product analysis failed")
+
+
+@app.get("/api/products/{asin}/history")
+async def get_product_history(
+    asin: str,
+    marketplace: Literal["US", "UK", "DE"] = "US",
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
+):
+    try:
+        return tools["product_analyzer"].get_history(db, asin, marketplace, days)
+    except ProductNotFoundError:
+        raise HTTPException(status_code=404, detail="Product not found")
+    except Exception:
+        logger.exception("Product history failed for %s", asin)
+        raise HTTPException(status_code=500, detail="Product history failed")
+
+
+@app.get("/api/market/categories")
+async def get_market_categories(db: Session = Depends(get_db)):
+    return {"categories": tools["market_intelligence"].list_categories(db)}
+
+
+@app.get("/api/market/categories/{category}")
+async def get_market_category(category: str, db: Session = Depends(get_db)):
+    return tools["market_intelligence"].category_summary(db, category)
+
+
+@app.get("/api/search/history")
+async def get_search_history(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return tools["search_history"].list_searches(db, user.id, limit, offset)
+
+
+@app.get("/api/search/{search_id}")
+async def get_search_detail(
+    search_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return tools["search_history"].get_search(db, user.id, search_id)
+    except SearchNotFoundError:
+        raise HTTPException(status_code=404, detail="Search not found")
+
+
+@app.get("/api/search/{search_id}/results")
+async def get_search_results(
+    search_id: int,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return tools["search_history"].get_results(db, user.id, search_id, limit, offset)
+    except SearchNotFoundError:
+        raise HTTPException(status_code=404, detail="Search not found")
+
+
+@app.get("/api/dashboard")
+async def get_dashboard_data(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return tools["search_history"].get_dashboard(db, user.id)
 
 
 @app.get("/api/keywords")
@@ -255,6 +405,7 @@ async def add_tracked_product(
             marketplace=request.marketplace,
             alert_settings=request.alert_settings,
         )
+        tools["usage"].record(db, "tracking_add", user.id, {"asin": request.asin})
         return {"success": True, "product": product}
     except Exception as exc:
         logger.error(
@@ -366,8 +517,7 @@ async def check_tracked_products(
     db: Session = Depends(get_db),
 ):
     try:
-        tracker = CanonicalTrackingService(scraper=tools["scraper"])
-        return tracker.check_products(db, user)
+        return await tools["tracking"].check_products(db, user)
     except Exception as exc:
         logger.error("Failed to check tracked products: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))

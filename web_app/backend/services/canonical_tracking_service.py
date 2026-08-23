@@ -1,12 +1,14 @@
 """User-owned tracking backed by the canonical application database."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from providers.base import ProductDataProvider
 from web_app.backend.db.models import Alert, Product, ProductSnapshot, TrackedProduct, User
+from web_app.backend.services.history_service import HistoryService
 
 DEFAULT_ALERT_SETTINGS = {
     "price_drop_pct": 5.0,
@@ -18,8 +20,13 @@ DEFAULT_ALERT_SETTINGS = {
 class CanonicalTrackingService:
     """Manage product tracking data for a single authenticated user."""
 
-    def __init__(self, scraper=None):
-        self.scraper = scraper
+    def __init__(
+        self,
+        provider: Optional[ProductDataProvider] = None,
+        history_service: Optional[HistoryService] = None,
+    ):
+        self.provider = provider
+        self.history_service = history_service or HistoryService()
 
     def add_product(self, db: Session, user: User, asin: str,
                     product_data: Dict[str, Any], marketplace: str = "US",
@@ -69,17 +76,9 @@ class CanonicalTrackingService:
         tracked = self._find_user_asin(db, user.id, asin)
         if not tracked:
             return []
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        snapshots = (
-            db.query(ProductSnapshot)
-            .filter(
-                ProductSnapshot.product_id == tracked.product_id,
-                ProductSnapshot.recorded_at >= cutoff,
-            )
-            .order_by(ProductSnapshot.recorded_at.asc(), ProductSnapshot.id.asc())
-            .all()
+        return self.history_service.get_product_timeline(
+            db, tracked.product_id, days=days
         )
-        return [self._serialize_snapshot(snapshot) for snapshot in snapshots]
 
     def get_alerts(self, db: Session, user: User, unread_only: bool = False,
                    limit: int = 50) -> List[Dict[str, Any]]:
@@ -137,9 +136,9 @@ class CanonicalTrackingService:
             "unread_alerts": unread_alerts,
         }
 
-    def check_products(self, db: Session, user: User) -> Dict[str, int]:
-        if not self.scraper:
-            raise ValueError("Scraper not configured for tracking service")
+    async def check_products(self, db: Session, user: User) -> Dict[str, int]:
+        if not self.provider:
+            raise ValueError("Product provider not configured for tracking service")
 
         results = {"checked": 0, "updated": 0, "alerts_generated": 0, "errors": 0}
         tracked_products = db.query(TrackedProduct).filter(
@@ -148,7 +147,7 @@ class CanonicalTrackingService:
         ).all()
         for tracked in tracked_products:
             try:
-                current_data = self.scraper.get_product_details(tracked.product.asin)
+                current_data = await self.provider.get_product(tracked.product.asin)
                 if not current_data:
                     continue
                 previous = self._latest_snapshot(db, tracked.product_id)
@@ -205,17 +204,21 @@ class CanonicalTrackingService:
     @staticmethod
     def _record_snapshot(db: Session, product: Product,
                          data: Dict[str, Any]) -> ProductSnapshot:
+        seller_info = data.get("seller_info") or {}
         snapshot = ProductSnapshot(
             product_id=product.id,
+            source=data.get("source") or "amazon_html",
             price=data.get("price"),
             rating=data.get("rating"),
             reviews=data.get("reviews"),
             bsr=data.get("bsr"),
+            seller_count=seller_info.get("total_sellers"),
             estimated_sales=data.get("estimated_sales"),
             estimated_revenue=data.get("est_revenue"),
             estimated_profit=data.get("est_profit"),
             margin=data.get("margin"),
             opportunity_score=data.get("enhanced_score"),
+            confidence=data.get("confidence") or data.get("_search_confidence"),
             raw_data=data,
         )
         db.add(snapshot)
@@ -266,6 +269,9 @@ class CanonicalTrackingService:
         check_count = db.query(ProductSnapshot).filter(
             ProductSnapshot.product_id == tracked.product_id
         ).count()
+        intelligence = self.history_service.get_product_intelligence(
+            db, tracked.product_id
+        )
         return {
             "id": tracked.id,
             "asin": tracked.product.asin,
@@ -275,6 +281,7 @@ class CanonicalTrackingService:
             "current_bsr": latest.bsr if latest else None,
             "current_reviews": latest.reviews if latest else None,
             "current_rating": latest.rating if latest else None,
+            "current_opportunity_score": latest.opportunity_score if latest else None,
             "initial_price": initial.price if initial else None,
             "initial_bsr": initial.bsr if initial else None,
             "initial_reviews": initial.reviews if initial else None,
@@ -302,6 +309,14 @@ class CanonicalTrackingService:
                 (latest.reviews or 0) - (initial.reviews or 0)
                 if latest and initial else 0
             ),
+            "score_change": intelligence["opportunity_score"]["change"],
+            "trends": {
+                "price": intelligence["price"]["trend"],
+                "bsr": intelligence["bsr"]["trend"],
+                "reviews": intelligence["reviews"]["trend"],
+                "opportunity_score": intelligence["opportunity_score"]["trend"],
+            },
+            "data_quality": intelligence["freshness"],
         }
 
     def _create_alerts(self, db: Session, tracked: TrackedProduct,

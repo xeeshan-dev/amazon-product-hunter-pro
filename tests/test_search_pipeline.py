@@ -127,6 +127,7 @@ async def test_search_pipeline_filters_and_scores_products():
     assert response["results"][0]["asin"] == "B001"
     assert response["results"][0]["enhanced_score"] == 80
     assert response["results"][0]["seller_info"]["seller_name"] is None
+    assert response["summary"]["filter_mode"] == "strict"
 
 
 @pytest.mark.asyncio
@@ -137,3 +138,65 @@ async def test_search_pipeline_enriches_sellers_when_seller_filters_active():
 
     assert response["summary"]["total_products"] == 1
     assert response["results"][0]["seller_info"]["seller_name"] == "Independent Seller"
+    assert response["results"][0]["seller_info"]["data_status"] == "observed"
+
+
+@pytest.mark.asyncio
+async def test_search_pipeline_returns_review_candidates_when_strict_filters_match_none():
+    pipeline = make_pipeline()
+
+    response = await pipeline.run(make_request(min_sales=500, min_margin=50))
+
+    assert response["summary"]["filter_mode"] == "review_fallback"
+    assert response["summary"]["review_candidates_returned"] is True
+    candidate = response["results"][0]
+    assert "sales_below_preference" in candidate["winning_product"]["review_flags"]
+    assert "margin_below_preference" in candidate["winning_product"]["review_flags"]
+
+
+@pytest.mark.asyncio
+async def test_search_pipeline_keeps_keyword_risk_flags_for_manual_validation():
+    class FlaggedRiskAnalyzer:
+        def analyze(self, product):
+            return SimpleNamespace(risks={"brand_risk": "HIGH", "hazmat": True})
+
+    pipeline = make_pipeline()
+    pipeline.risk_analyzer = FlaggedRiskAnalyzer()
+    response = await pipeline.run(make_request())
+
+    assert response["summary"]["total_products"] == 1
+    flags = response["results"][0]["winning_product"]["review_flags"]
+    assert "brand_risk_requires_manual_validation" in flags
+    assert "hazmat_flag_requires_manual_validation" in flags
+
+
+@pytest.mark.asyncio
+async def test_search_pipeline_excludes_confirmed_amazon_seller_when_requested():
+    class AmazonSellerProvider(FakeProvider):
+        async def get_sellers(self, asin):
+            return {
+                "amazon_seller": True,
+                "total_sellers": 2,
+                "seller_name": "Amazon.com",
+            }
+
+    pipeline = make_pipeline()
+    pipeline.provider_factory = AmazonSellerProvider
+
+    response = await pipeline.run(make_request(skip_amazon_seller=True))
+
+    assert response["summary"]["total_products"] == 0
+
+
+@pytest.mark.asyncio
+async def test_search_pipeline_skips_products_missing_required_validation_data():
+    class InvalidProductProvider(FakeProvider):
+        async def search_products(self, keyword, pages=1):
+            return [{"asin": "B001", "title": "Incomplete", "price": 0, "rating": 5}]
+
+    pipeline = make_pipeline()
+    pipeline.provider_factory = InvalidProductProvider
+
+    response = await pipeline.run(make_request())
+
+    assert response["summary"]["total_products"] == 0
