@@ -1,0 +1,27 @@
+module.exports = {
+    root: true,
+    env: { browser: true, es2020: true },
+    extends: [
+        'eslint:recommended',
+        'plugin:react/recommended',
+        'plugin:react/jsx-runtime',
+        'plugin:react-hooks/recommended',
+    ],
+    ignorePatterns: ['dist', '.eslintrc.cjs'],
+    parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+    },
+    settings: { react: { version: '18.2' } },
+    plugins: ['react-refresh'],
+    rules: {
+        // The hunter page intentionally fetches once on mount; dependency
+        // arrays would re-trigger provider searches on every state change.
+        'react-hooks/exhaustive-deps': 'off',
+        // Plain-JS app consuming dynamic API payloads; PropTypes were never
+        // part of this codebase and TypeScript is not in use yet.
+        'react/prop-types': 'off',
+        'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+        'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+}

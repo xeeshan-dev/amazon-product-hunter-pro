@@ -1,0 +1,1632 @@
+import { useState, useEffect } from 'react'
+import { Search, Loader2, TrendingUp, DollarSign, ShoppingCart, AlertTriangle, X as CloseIcon, Filter, ShieldAlert, Download, Calculator, Award, Info, Eye, Bell, BarChart3, Table2, LayoutGrid } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
+import { clsx } from 'clsx'
+import { twMerge } from 'tailwind-merge'
+import ChatInterface from '../components/ChatInterface'
+import ResultsTable from '../components/ResultsTable'
+import { apiClient, API_URL } from '../services/apiClient'
+import { exportToCSV, exportToJSON } from '../utils/exportUtils'
+
+// Utility for class merging
+function cn(...inputs) {
+    return twMerge(clsx(inputs))
+}
+
+function ProductHunter() {
+    const [selectedProduct, setSelectedProduct] = useState(null)
+    const [keyword, setKeyword] = useState('')
+    const [loading, setLoading] = useState(false)
+    const [data, setData] = useState(null)
+    const [error, setError] = useState(null)
+    const [marketplace, setMarketplace] = useState('US')
+    const [minRating, setMinRating] = useState(3.0)
+    const [skipRisky, setSkipRisky] = useState(true)
+    const [showFilters, setShowFilters] = useState(false)
+    const [minMargin, setMinMargin] = useState(10)
+    const [showProfitCalc, setShowProfitCalc] = useState(false)
+    const [showWinnersOnly, setShowWinnersOnly] = useState(false)
+    const [skipAmazonSeller, setSkipAmazonSeller] = useState(false)
+    const [skipBrandSeller, setSkipBrandSeller] = useState(false)
+    const [minSales, setMinSales] = useState(10)
+    const [maxSales, setMaxSales] = useState(2000)
+
+    // NEW: Saved Searches & Watchlist (with localStorage)
+    const [savedSearches, setSavedSearches] = useState(() => {
+        const saved = localStorage.getItem('savedSearches')
+        return saved ? JSON.parse(saved) : []
+    })
+    const [watchlist, setWatchlist] = useState(() => {
+        const saved = localStorage.getItem('watchlist')
+        return saved ? JSON.parse(saved) : []
+    })
+
+    // NEW: Product Comparison
+    const [selectedForComparison, setSelectedForComparison] = useState([])
+    const [showComparison, setShowComparison] = useState(false)
+
+    // NEW: Enhanced Sorting
+    const [sortBy, setSortBy] = useState('score') // score, price, sales, margin, revenue, reviews, bsr, sellers, verdict
+    const [sortOrder, setSortOrder] = useState('desc') // asc, desc
+
+    // NEW: Results view mode (pro data table vs legacy cards)
+    const [viewMode, setViewMode] = useState('table')
+
+    // NEW: UI State
+    const [showSavedSearches, setShowSavedSearches] = useState(false)
+    const [showWatchlist, setShowWatchlist] = useState(false)
+
+    // NEW: Tracking State
+    const [trackedProducts, setTrackedProducts] = useState([])
+    const [trackingAlerts, setTrackingAlerts] = useState([])
+    const [showTracking, setShowTracking] = useState(false)
+    const [trackingLoading, setTrackingLoading] = useState(false)
+    const [trackingToken, setTrackingToken] = useState(() => localStorage.getItem('trackingAccessToken'))
+    const [showAuth, setShowAuth] = useState(false)
+    const [authMode, setAuthMode] = useState('login')
+    const [authEmail, setAuthEmail] = useState('')
+    const [authPassword, setAuthPassword] = useState('')
+    const [authFullName, setAuthFullName] = useState('')
+    const [authError, setAuthError] = useState('')
+    const [authLoading, setAuthLoading] = useState(false)
+
+    const handleSearch = async (e) => {
+        e.preventDefault()
+        if (!keyword.trim()) return
+
+        setLoading(true)
+        setError(null)
+        setData(null)
+
+        try {
+            const response = await apiClient.post(`${API_URL}/search`, {
+                keyword,
+                marketplace,
+                min_rating: minRating,
+                skip_risky_brands: skipRisky,
+                skip_hazmat: skipRisky,
+                pages: 2, // default to 2 pages
+                // Send all filter parameters to backend
+                skip_amazon_seller: skipAmazonSeller,
+                skip_brand_seller: skipBrandSeller,
+                min_margin: minMargin,
+                min_sales: minSales,
+                max_sales: maxSales,
+                fetch_seller_info: true
+            })
+            setData(response.data)
+        } catch (err) {
+            setError('Failed to fetch data. Please try again.')
+            console.error(err)
+        } finally {
+            setLoading(false)
+        }
+    }
+
+    // NEW: Save Search Function
+    const saveCurrentSearch = () => {
+        const searchName = prompt('Name this search:')
+        if (!searchName) return
+
+        const searchData = {
+            id: Date.now(),
+            name: searchName,
+            keyword,
+            marketplace,
+            filters: {
+                minRating,
+                minMargin,
+                skipRisky,
+                skipAmazonSeller,
+                skipBrandSeller,
+                minSales,
+                maxSales
+            },
+            savedAt: new Date().toISOString()
+        }
+
+        const updated = [...savedSearches, searchData]
+        setSavedSearches(updated)
+        localStorage.setItem('savedSearches', JSON.stringify(updated))
+        alert('Search saved successfully!')
+    }
+
+    // NEW: Load Search Function
+    const loadSearch = (search) => {
+        setKeyword(search.keyword)
+        setMarketplace(search.marketplace)
+        setMinRating(search.filters.minRating)
+        setMinMargin(search.filters.minMargin)
+        setSkipRisky(search.filters.skipRisky)
+        setSkipAmazonSeller(search.filters.skipAmazonSeller)
+        setSkipBrandSeller(search.filters.skipBrandSeller)
+        setMinSales(search.filters.minSales)
+        setMaxSales(search.filters.maxSales)
+        setShowSavedSearches(false)
+    }
+
+    // NEW: Delete Search Function
+    const deleteSearch = (id) => {
+        if (!confirm('Delete this saved search?')) return
+        const updated = savedSearches.filter(s => s.id !== id)
+        setSavedSearches(updated)
+        localStorage.setItem('savedSearches', JSON.stringify(updated))
+    }
+
+    // NEW: Add to Watchlist
+    const addToWatchlist = (product) => {
+        if (watchlist.find(p => p.asin === product.asin)) {
+            alert('Product already in watchlist!')
+            return
+        }
+
+        const updated = [...watchlist, {
+            ...product,
+            addedAt: new Date().toISOString()
+        }]
+        setWatchlist(updated)
+        localStorage.setItem('watchlist', JSON.stringify(updated))
+        alert('Added to watchlist!')
+    }
+
+    // NEW: Remove from Watchlist
+    const removeFromWatchlist = (asin) => {
+        const updated = watchlist.filter(p => p.asin !== asin)
+        setWatchlist(updated)
+        localStorage.setItem('watchlist', JSON.stringify(updated))
+    }
+
+    // NEW: Toggle Comparison
+    const toggleComparison = (product) => {
+        if (selectedForComparison.find(p => p.asin === product.asin)) {
+            setSelectedForComparison(selectedForComparison.filter(p => p.asin !== product.asin))
+        } else if (selectedForComparison.length < 5) {
+            setSelectedForComparison([...selectedForComparison, product])
+        } else {
+            alert('Maximum 5 products can be compared!')
+        }
+    }
+
+    // NEW: Sort Products
+    const VERDICT_SORT_RANK = {
+        'Strong research candidate': 4,
+        'Worth researching': 3,
+        'Needs validation': 2,
+        'Deprioritize': 1,
+    }
+
+    const getSortValue = (product, key) => {
+        switch (key) {
+            case 'price':
+                return product.price || 0
+            case 'sales':
+                return product.estimated_sales || 0
+            case 'margin':
+                return product.margin || 0
+            case 'revenue':
+                return product.est_revenue || 0
+            case 'reviews':
+                return product.reviews || 0
+            case 'bsr':
+                return product.bsr || 0
+            case 'sellers':
+                return product.seller_info?.total_sellers || 0
+            case 'profit':
+                return product.est_profit || 0
+            case 'verdict':
+                return VERDICT_SORT_RANK[product.winning_product?.decision] || 0
+            default: // score
+                return product.enhanced_score || 0
+        }
+    }
+
+    const handleSortColumn = (key) => {
+        if (sortBy === key) {
+            setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
+        } else {
+            setSortBy(key)
+            setSortOrder('desc')
+        }
+    }
+
+    const filterVisibleProducts = (products) => products.filter(p => {
+        if (showWinnersOnly && p.winning_product?.decision !== 'Strong research candidate') return false
+
+        // Strict filters were already evaluated by the backend. Do not hide its review fallback.
+        if (data.summary.filter_mode !== 'review_fallback' && p.margin < minMargin) return false
+
+        if (skipAmazonSeller && p.seller_info?.amazon_seller) return false
+
+        if (skipBrandSeller && p.seller_info?.seller_name && p.brand) {
+            const sellerLower = p.seller_info.seller_name.toLowerCase()
+            const brandLower = p.brand.toLowerCase()
+            if (sellerLower.includes(brandLower) || brandLower.includes(sellerLower)) return false
+        }
+
+        const sales = p.estimated_sales || 0
+        if (data.summary.filter_mode !== 'review_fallback' && (sales < minSales || sales > maxSales)) return false
+
+        return true
+    })
+
+    const sortProducts = (products) => {
+        return [...products].sort((a, b) => {
+            const aVal = getSortValue(a, sortBy)
+            const bVal = getSortValue(b, sortBy)
+            return sortOrder === 'asc' ? aVal - bVal : bVal - aVal
+        })
+    }
+
+    const trackingRequest = (config) => apiClient({
+        ...config,
+        headers: {
+            ...config.headers,
+            Authorization: `Bearer ${trackingToken}`
+        }
+    })
+
+    const requireTrackingAuth = () => {
+        if (trackingToken) return true
+        setShowAuth(true)
+        return false
+    }
+
+    const submitAuth = async (event) => {
+        event.preventDefault()
+        setAuthError('')
+        setAuthLoading(true)
+        try {
+            const payload = { email: authEmail, password: authPassword }
+            if (authMode === 'register' && authFullName.trim()) payload.full_name = authFullName.trim()
+            const response = await apiClient.post(`${API_URL}/auth/${authMode}`, payload)
+            const token = response.data.access_token
+            localStorage.setItem('trackingAccessToken', token)
+            setTrackingToken(token)
+            setAuthPassword('')
+            setShowAuth(false)
+        } catch (error) {
+            setAuthError(error.response?.data?.detail || 'Authentication failed. Please try again.')
+        } finally {
+            setAuthLoading(false)
+        }
+    }
+
+    // NEW: Fetch Tracked Products
+    const fetchTrackedProducts = async () => {
+        if (!trackingToken) {
+            setTrackedProducts([])
+            return
+        }
+        try {
+            setTrackingLoading(true)
+            const response = await trackingRequest({ url: `${API_URL}/tracking/products` })
+            setTrackedProducts(response.data.products || [])
+        } catch (error) {
+            console.error('Failed to fetch tracked products:', error)
+        } finally {
+            setTrackingLoading(false)
+        }
+    }
+
+    // NEW: Fetch Tracking Alerts
+    const fetchTrackingAlerts = async () => {
+        if (!trackingToken) {
+            setTrackingAlerts([])
+            return
+        }
+        try {
+            const response = await trackingRequest({ url: `${API_URL}/tracking/alerts?unread_only=true` })
+            setTrackingAlerts(response.data.alerts || [])
+        } catch (error) {
+            console.error('Failed to fetch alerts:', error)
+        }
+    }
+
+    // NEW: Add Product to Tracking
+    const addToTracking = async (product) => {
+        if (!requireTrackingAuth()) return
+        if (trackedProducts.find(p => p.asin === product.asin)) {
+            alert('Product is already being tracked!')
+            return
+        }
+
+        try {
+            const response = await trackingRequest({
+                method: 'post',
+                url: `${API_URL}/tracking/add`,
+                data: {
+                    asin: product.asin,
+                    product_data: {
+                        title: product.title,
+                        image_url: product.image_url,
+                        price: product.price,
+                        bsr: product.bsr,
+                        reviews: product.reviews,
+                        rating: product.rating
+                    },
+                    marketplace: marketplace
+                },
+            })
+
+            if (response.data.success) {
+                setTrackedProducts([...trackedProducts, response.data.product])
+                alert('Product added to tracking!')
+            }
+        } catch (error) {
+            console.error('Failed to add product to tracking:', error)
+            alert('Failed to add product to tracking')
+        }
+    }
+
+    // NEW: Remove Product from Tracking
+    const removeFromTracking = async (asin) => {
+        if (!requireTrackingAuth()) return
+        if (!confirm('Stop tracking this product?')) return
+
+        try {
+            await trackingRequest({ method: 'delete', url: `${API_URL}/tracking/${asin}` })
+            setTrackedProducts(trackedProducts.filter(p => p.asin !== asin))
+        } catch (error) {
+            console.error('Failed to remove product from tracking:', error)
+            alert('Failed to remove product from tracking')
+        }
+    }
+
+    // NEW: Mark Alert as Read
+    const markAlertRead = async (alertId) => {
+        if (!requireTrackingAuth()) return
+        try {
+            await trackingRequest({
+                method: 'post',
+                url: `${API_URL}/tracking/alerts/read`,
+                data: [alertId]
+            })
+            setTrackingAlerts(trackingAlerts.filter(a => a.id !== alertId))
+        } catch (error) {
+            console.error('Failed to mark alert as read:', error)
+        }
+    }
+
+    // Load tracked products on mount
+    useEffect(() => {
+        fetchTrackedProducts()
+        fetchTrackingAlerts()
+    }, [trackingToken])
+
+    // NEW: Tracking Panel Component
+    const TrackingPanel = () => (
+        <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            className="fixed right-0 top-0 h-full w-96 bg-slate-900 border-l border-slate-700 p-6 overflow-y-auto z-50 shadow-2xl"
+        >
+            <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold flex items-center gap-2">
+                    <Eye className="w-5 h-5 text-indigo-400" />
+                    Product Tracking
+                </h3>
+                <button onClick={() => setShowTracking(false)} className="text-slate-400 hover:text-white">
+                    <CloseIcon className="w-5 h-5" />
+                </button>
+            </div>
+
+            {/* Alerts Section */}
+            {trackingAlerts.length > 0 && (
+                <div className="mb-6">
+                    <h4 className="text-sm font-medium text-slate-400 mb-3 flex items-center gap-2">
+                        <Bell className="w-4 h-4 text-yellow-400" />
+                        Unread Alerts ({trackingAlerts.length})
+                    </h4>
+                    <div className="space-y-2">
+                        {trackingAlerts.slice(0, 5).map(alert => (
+                            <div
+                                key={alert.id}
+                                className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg"
+                            >
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <div className="text-xs text-yellow-400 font-medium uppercase">{alert.alert_type.replace('_', ' ')}</div>
+                                        <div className="text-sm text-slate-300 mt-1">{alert.message}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{alert.product?.title?.substring(0, 40)}...</div>
+                                    </div>
+                                    <button
+                                        onClick={() => markAlertRead(alert.id)}
+                                        className="text-xs text-slate-500 hover:text-slate-300"
+                                    >
+                                        Dismiss
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Tracked Products */}
+            <div>
+                <h4 className="text-sm font-medium text-slate-400 mb-3">
+                    Tracked Products ({trackedProducts.length})
+                </h4>
+
+                {trackingLoading ? (
+                    <div className="flex justify-center py-8">
+                        <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
+                    </div>
+                ) : trackedProducts.length === 0 ? (
+                    <p className="text-slate-500 text-sm text-center py-8">
+                        No products being tracked.<br />
+                        Click the eye icon on any product to start tracking.
+                    </p>
+                ) : (
+                    <div className="space-y-3">
+                        {trackedProducts.map(product => (
+                            <div key={product.asin} className="p-4 bg-slate-800 rounded-lg border border-slate-700">
+                                <div className="text-sm font-medium text-white mb-2 line-clamp-2">
+                                    {product.title}
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                                    <div>
+                                        <span className="text-slate-500">Price:</span>
+                                        <span className="text-white ml-1">${product.current_price?.toFixed(2)}</span>
+                                        {product.price_change_pct !== 0 && (
+                                            <span className={`ml-1 ${product.price_change_pct < 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                ({product.price_change_pct > 0 ? '+' : ''}{product.price_change_pct?.toFixed(1)}%)
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <span className="text-slate-500">BSR:</span>
+                                        <span className="text-white ml-1">#{product.current_bsr?.toLocaleString()}</span>
+                                        {product.bsr_change_pct !== 0 && (
+                                            <span className={`ml-1 ${product.bsr_change_pct > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                ({product.bsr_change_pct > 0 ? '+' : ''}{product.bsr_change_pct?.toFixed(1)}%)
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <span className="text-slate-500">Reviews:</span>
+                                        <span className="text-white ml-1">{product.current_reviews?.toLocaleString()}</span>
+                                        {product.review_change > 0 && (
+                                            <span className="ml-1 text-green-400">(+{product.review_change})</span>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <span className="text-slate-500">Score:</span>
+                                        <span className="text-cyan-300 ml-1">{product.current_opportunity_score?.toFixed(0) || 'N/A'}</span>
+                                        {product.score_change && (
+                                            <span className={`ml-1 ${product.score_change > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                ({product.score_change > 0 ? '+' : ''}{product.score_change.toFixed(1)})
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="mb-3 text-xs text-slate-500">
+                                    Price {product.trends?.price || 'Insufficient Data'} · BSR {product.trends?.bsr || 'Insufficient Data'} · {product.data_quality?.status || 'Unavailable'} data
+                                </div>
+
+                                <div className="flex justify-between items-center text-xs">
+                                    <span className="text-slate-500">
+                                        Last checked: {product.last_checked ? new Date(product.last_checked).toLocaleDateString() : 'Never'}
+                                    </span>
+                                    <button
+                                        onClick={() => removeFromTracking(product.asin)}
+                                        className="text-red-400 hover:text-red-300"
+                                    >
+                                        Stop Tracking
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Refresh Button */}
+            <button
+                onClick={() => { fetchTrackedProducts(); fetchTrackingAlerts(); }}
+                className="w-full mt-4 px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 text-sm"
+            >
+                Refresh Tracking Data
+            </button>
+        </motion.div>
+    )
+
+    // NEW: Saved Searches Panel Component
+    const SavedSearchesPanel = () => (
+        <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            className="fixed left-0 top-0 h-full w-80 bg-slate-900 border-r border-slate-700 p-6 overflow-y-auto z-50 shadow-2xl"
+        >
+            <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold">Saved Searches</h3>
+                <button onClick={() => setShowSavedSearches(false)} className="text-slate-400 hover:text-white">
+                    <CloseIcon className="w-5 h-5" />
+                </button>
+            </div>
+
+            <button
+                onClick={saveCurrentSearch}
+                className="w-full mb-4 px-4 py-3 bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors font-medium"
+            >
+                Save Current Search
+            </button>
+
+            <div className="space-y-3">
+                {savedSearches.length === 0 ? (
+                    <p className="text-slate-400 text-sm text-center py-8">No saved searches yet</p>
+                ) : (
+                    savedSearches.map(search => (
+                        <div
+                            key={search.id}
+                            className="p-4 bg-slate-800 rounded-lg hover:bg-slate-700 cursor-pointer transition-colors border border-slate-700"
+                        >
+                            <div onClick={() => loadSearch(search)}>
+                                <div className="font-medium text-white mb-1">{search.name}</div>
+                                <div className="text-sm text-slate-400">{search.keyword}</div>
+                                <div className="text-xs text-slate-500 mt-2">
+                                    {new Date(search.savedAt).toLocaleDateString()}
+                                </div>
+                            </div>
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    deleteSearch(search.id)
+                                }}
+                                className="mt-2 text-xs text-red-400 hover:text-red-300"
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    ))
+                )}
+            </div>
+        </motion.div>
+    )
+
+    // NEW: Watchlist Panel Component
+    const WatchlistPanel = () => (
+        <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            className="fixed right-0 top-0 h-full w-80 bg-slate-900 border-l border-slate-700 p-6 overflow-y-auto z-50 shadow-2xl"
+        >
+            <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold">Watchlist ({watchlist.length})</h3>
+                <button onClick={() => setShowWatchlist(false)} className="text-slate-400 hover:text-white">
+                    <CloseIcon className="w-5 h-5" />
+                </button>
+            </div>
+
+            <div className="space-y-3">
+                {watchlist.length === 0 ? (
+                    <p className="text-slate-400 text-sm text-center py-8">No products in watchlist</p>
+                ) : (
+                    watchlist.map(product => (
+                        <div key={product.asin} className="p-4 bg-slate-800 rounded-lg border border-slate-700">
+                            <div className="font-medium text-sm text-white mb-2 line-clamp-2">
+                                {product.title}
+                            </div>
+                            <div className="flex justify-between text-xs text-slate-400 mb-2">
+                                <span>${product.price}</span>
+                                <span>Score: {product.enhanced_score}/100</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-green-400">{product.margin?.toFixed(1)}% margin</span>
+                                <button
+                                    onClick={() => removeFromWatchlist(product.asin)}
+                                    className="text-red-400 hover:text-red-300"
+                                >
+                                    Remove
+                                </button>
+                            </div>
+                        </div>
+                    ))
+                )}
+            </div>
+        </motion.div>
+    )
+
+    // NEW: Comparison Modal Component
+    const ComparisonModal = () => (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="bg-slate-900 rounded-2xl p-8 max-w-6xl w-full max-h-[90vh] overflow-auto border border-slate-700"
+            >
+                <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-2xl font-bold">Product Comparison</h2>
+                    <button
+                        onClick={() => setShowComparison(false)}
+                        className="text-slate-400 hover:text-white"
+                    >
+                        <CloseIcon className="w-6 h-6" />
+                    </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                    <table className="w-full">
+                        <thead>
+                            <tr className="border-b border-slate-700">
+                                <th className="text-left p-3 text-slate-400 font-medium">Metric</th>
+                                {selectedForComparison.map(p => (
+                                    <th key={p.asin} className="text-left p-3 min-w-[200px]">
+                                        <div className="text-sm font-normal text-white line-clamp-2">
+                                            {p.title.substring(0, 50)}...
+                                        </div>
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {[
+                                { label: 'Price', key: 'price', format: (v) => `$${v?.toFixed(2)}` },
+                                { label: 'Opportunity Score', key: 'enhanced_score', format: (v) => `${v}/100`, highlight: 'max' },
+                                { label: 'Est. Sales/Month', key: 'estimated_sales', format: (v) => v?.toFixed(0) },
+                                { label: 'Est. Revenue/Month', key: 'est_revenue', format: (v) => `$${v?.toFixed(0)}`, highlight: 'max' },
+                                { label: 'Profit Margin', key: 'margin', format: (v) => `${v?.toFixed(1)}%`, highlight: 'max' },
+                                { label: 'Rating', key: 'rating', format: (v) => `${v} ⭐` },
+                                { label: 'Reviews', key: 'reviews', format: (v) => v?.toLocaleString() },
+                                { label: 'BSR', key: 'bsr', format: (v) => `#${v?.toLocaleString()}`, highlight: 'min' },
+                            ].map(({ label, key, format, highlight }) => {
+                                const values = selectedForComparison.map(p => p[key])
+                                const bestValue = highlight === 'max' ? Math.max(...values) : highlight === 'min' ? Math.min(...values) : null
+
+                                return (
+                                    <tr key={key} className="border-b border-slate-800">
+                                        <td className="p-3 font-medium text-slate-300">{label}</td>
+                                        {selectedForComparison.map(p => {
+                                            const value = p[key]
+                                            const isBest = highlight && value === bestValue
+                                            return (
+                                                <td
+                                                    key={p.asin}
+                                                    className={`p-3 ${isBest ? 'text-green-400 font-bold' : 'text-slate-300'}`}
+                                                >
+                                                    {format(value)}
+                                                </td>
+                                            )
+                                        })}
+                                    </tr>
+                                )
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div className="mt-6 flex justify-end gap-4">
+                    <button
+                        onClick={() => {
+                            setSelectedForComparison([])
+                            setShowComparison(false)
+                        }}
+                        className="px-6 py-2 bg-slate-700 rounded-lg hover:bg-slate-600"
+                    >
+                        Clear & Close
+                    </button>
+                </div>
+            </motion.div>
+        </div>
+    )
+
+    return (
+        <div className="text-slate-200">
+            <div className="space-y-6">
+
+                {/* Compact Toolbar Header */}
+                <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3"
+                >
+                    <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-500">
+                            <BarChart3 className="h-5 w-5 text-white" />
+                        </div>
+                        <div>
+                            <h1 className="text-base font-bold leading-tight text-white">Amazon Hunter Pro</h1>
+                            <p className="text-xs text-slate-400">Product Research Workbench</p>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                        <button
+                            onClick={() => setShowSavedSearches(true)}
+                            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 hover:text-white"
+                        >
+                            <Search className="h-3.5 w-3.5" />
+                            Saved ({savedSearches.length})
+                        </button>
+                        <button
+                            onClick={() => setShowWatchlist(true)}
+                            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 hover:text-white"
+                        >
+                            <Award className="h-3.5 w-3.5" />
+                            Watchlist ({watchlist.length})
+                        </button>
+                        <button
+                            onClick={() => trackingToken ? setShowTracking(true) : setShowAuth(true)}
+                            className="relative flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 hover:text-white"
+                        >
+                            <Eye className="h-3.5 w-3.5" />
+                            Tracking ({trackedProducts.length})
+                            {trackingAlerts.length > 0 && (
+                                <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+                                    {trackingAlerts.length}
+                                </span>
+                            )}
+                        </button>
+                        {selectedForComparison.length > 0 && (
+                            <button
+                                onClick={() => setShowComparison(true)}
+                                className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-indigo-500"
+                            >
+                                <Info className="h-3.5 w-3.5" />
+                                Compare ({selectedForComparison.length})
+                            </button>
+                        )}
+                    </div>
+                </motion.div>
+
+                <AnimatePresence>
+                    {showAuth && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+                        >
+                            <motion.form
+                                initial={{ opacity: 0, y: 12 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                onSubmit={submitAuth}
+                                className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-2xl"
+                            >
+                                <div className="mb-5 flex items-start justify-between gap-4">
+                                    <div>
+                                        <h2 className="text-lg font-semibold text-white">
+                                            {authMode === 'login' ? 'Sign in to tracking' : 'Create tracking account'}
+                                        </h2>
+                                        <p className="mt-1 text-sm text-slate-400">Keep tracked products and alerts private to your account.</p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAuth(false)}
+                                        className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                                        aria-label="Close authentication dialog"
+                                    >
+                                        <CloseIcon className="h-5 w-5" />
+                                    </button>
+                                </div>
+
+                                <div className="space-y-3">
+                                    {authMode === 'register' && (
+                                        <input
+                                            value={authFullName}
+                                            onChange={(event) => setAuthFullName(event.target.value)}
+                                            placeholder="Name (optional)"
+                                            maxLength="255"
+                                            className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400"
+                                        />
+                                    )}
+                                    <input
+                                        type="email"
+                                        value={authEmail}
+                                        onChange={(event) => setAuthEmail(event.target.value)}
+                                        placeholder="Email address"
+                                        required
+                                        className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400"
+                                    />
+                                    <input
+                                        type="password"
+                                        value={authPassword}
+                                        onChange={(event) => setAuthPassword(event.target.value)}
+                                        placeholder="Password"
+                                        minLength={authMode === 'register' ? 12 : 1}
+                                        required
+                                        className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400"
+                                    />
+                                </div>
+
+                                {authError && <p className="mt-3 text-sm text-red-400">{authError}</p>}
+
+                                <button
+                                    type="submit"
+                                    disabled={authLoading}
+                                    className="mt-5 flex w-full items-center justify-center rounded bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {authLoading ? 'Please wait...' : authMode === 'login' ? 'Sign in' : 'Create account'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setAuthMode(authMode === 'login' ? 'register' : 'login')
+                                        setAuthError('')
+                                    }}
+                                    className="mt-3 w-full text-sm text-cyan-300 hover:text-cyan-200"
+                                >
+                                    {authMode === 'login' ? 'Create an account' : 'I already have an account'}
+                                </button>
+                            </motion.form>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                {/* Search & Filters */}
+                <div className="relative z-10 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                            {['US', 'UK', 'DE'].map((m) => (
+                                <button
+                                    key={m}
+                                    onClick={() => setMarketplace(m)}
+                                    className={cn(
+                                        "px-4 py-1.5 rounded-md text-sm font-medium transition-all text-white",
+                                        marketplace === m ? "bg-indigo-600 shadow-lg" : "text-slate-400 hover:text-white"
+                                    )}
+                                >
+                                    {m}
+                                </button>
+                            ))}
+                        </div>
+                        <button
+                            onClick={() => setShowFilters(!showFilters)}
+                            className={cn(
+                                "flex items-center gap-2 px-4 py-2 rounded-lg border transition-all text-sm font-medium",
+                                showFilters ? "bg-indigo-600/20 border-indigo-500/50 text-indigo-300" : "bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700"
+                            )}
+                        >
+                            <Filter className="w-4 h-4" /> Filters
+                        </button>
+                    </div>
+
+                    {/* Collapsible Filters */}
+                    <AnimatePresence>
+                        {showFilters && (
+                            <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="overflow-hidden"
+                            >
+                                <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-4">
+                                    <div>
+                                        <label className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+                                            <ShieldAlert className="w-4 h-4 text-orange-400" /> Risk Controls
+                                        </label>
+                                        <div className="space-y-2">
+                                            <div className="flex items-center gap-3 bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={skipRisky}
+                                                    onChange={(e) => setSkipRisky(e.target.checked)}
+                                                    className="w-4 h-4 rounded border-slate-600 text-indigo-600 focus:ring-indigo-500 bg-slate-800"
+                                                />
+                                                <span className="text-sm text-slate-300">Skip High Risk & Hazmat</span>
+                                            </div>
+                                            <div className="flex items-center gap-3 bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={skipAmazonSeller}
+                                                    onChange={(e) => setSkipAmazonSeller(e.target.checked)}
+                                                    className="w-4 h-4 rounded border-slate-600 text-indigo-600 focus:ring-indigo-500 bg-slate-800"
+                                                />
+                                                <span className="text-sm text-slate-300">Skip Amazon as Seller</span>
+                                            </div>
+                                            <div className="flex items-center gap-3 bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={skipBrandSeller}
+                                                    onChange={(e) => setSkipBrandSeller(e.target.checked)}
+                                                    className="w-4 h-4 rounded border-slate-600 text-indigo-600 focus:ring-indigo-500 bg-slate-800"
+                                                />
+                                                <span className="text-sm text-slate-300">Skip Brand as Seller</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+                                            <TrendingUp className="w-4 h-4 text-green-400" /> Quality Filters
+                                        </label>
+                                        <div className="space-y-3">
+                                            <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                                                <label className="text-xs text-slate-400 mb-1 block">Min Rating: {minRating}</label>
+                                                <input
+                                                    type="range"
+                                                    min="1"
+                                                    max="5"
+                                                    step="0.5"
+                                                    value={minRating}
+                                                    onChange={(e) => setMinRating(parseFloat(e.target.value))}
+                                                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                                                />
+                                                <div className="flex justify-between text-xs text-slate-500 mt-1">
+                                                    <span>1.0</span>
+                                                    <span>5.0</span>
+                                                </div>
+                                            </div>
+                                            <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                                                <label className="text-xs text-slate-400 mb-1 block">Min Margin: {minMargin}%</label>
+                                                <input
+                                                    type="range"
+                                                    min="10"
+                                                    max="50"
+                                                    step="5"
+                                                    value={minMargin}
+                                                    onChange={(e) => setMinMargin(parseInt(e.target.value))}
+                                                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-green-500"
+                                                />
+                                                <div className="flex justify-between text-xs text-slate-500 mt-1">
+                                                    <span>10%</span>
+                                                    <span>50%</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+                                            <ShoppingCart className="w-4 h-4 text-blue-400" /> Sales Range
+                                        </label>
+                                        <div className="space-y-3">
+                                            <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                                                <label className="text-xs text-slate-400 mb-1 block">Min Sales: {minSales}/mo</label>
+                                                <input
+                                                    type="range"
+                                                    min="10"
+                                                    max="500"
+                                                    step="10"
+                                                    value={minSales}
+                                                    onChange={(e) => setMinSales(parseInt(e.target.value))}
+                                                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                                />
+                                                <div className="flex justify-between text-xs text-slate-500 mt-1">
+                                                    <span>10</span>
+                                                    <span>500</span>
+                                                </div>
+                                            </div>
+                                            <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                                                <label className="text-xs text-slate-400 mb-1 block">Max Sales: {maxSales}/mo</label>
+                                                <input
+                                                    type="range"
+                                                    min="100"
+                                                    max="2000"
+                                                    step="100"
+                                                    value={maxSales}
+                                                    onChange={(e) => setMaxSales(parseInt(e.target.value))}
+                                                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                                                />
+                                                <div className="flex justify-between text-xs text-slate-500 mt-1">
+                                                    <span>100</span>
+                                                    <span>2000</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                    <form onSubmit={handleSearch} className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 shadow-lg transition-colors focus-within:border-cyan-500/60">
+                        <div className="flex flex-1 items-center">
+                            <Search className="ml-4 text-slate-500 w-5 h-5" />
+                            <input
+                                type="text"
+                                value={keyword}
+                                onChange={(e) => setKeyword(e.target.value)}
+                                placeholder="Enter product keyword (e.g. 'yoga mat')..."
+                                className="w-full bg-transparent outline-none border-none focus:ring-0 text-sm py-2.5 px-3 text-white placeholder-slate-500"
+                            />
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                className="mr-2 bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-lg font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                            >
+                                {loading ? <Loader2 className="animate-spin w-5 h-5" /> : 'Hunt'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                {/* Error State */}
+                {error && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-center"
+                    >
+                        {error}
+                    </motion.div>
+                )}
+
+                {/* Main Content */}
+                {data && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5 }}
+                        className="space-y-8"
+                    >
+                        {/* Market Overview Cards */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <StatCard
+                                title="Total Market Revenue"
+                                value={`$${data.summary.total_revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+                                icon={DollarSign}
+                                color="text-green-400"
+                            />
+                            <StatCard
+                                title="Avg Revenue/Listing"
+                                value={`$${data.summary.avg_revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+                                icon={TrendingUp}
+                                color="text-blue-400"
+                            />
+                            <StatCard
+                                title="Avg Monthly Sales"
+                                value={Math.round(data.summary.avg_sales).toLocaleString()}
+                                icon={ShoppingCart}
+                                color="text-purple-400"
+                            />
+                            <StatCard
+                                title="Products Analyzed"
+                                value={data.summary.total_products}
+                                icon={Search}
+                                color="text-orange-400"
+                            />
+                        </div>
+
+                        {/* Action Bar */}
+                        <div className="flex flex-wrap gap-3 items-center justify-between bg-slate-800/30 rounded-xl p-4 border border-slate-700/50">
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => setShowWinnersOnly(!showWinnersOnly)}
+                                    className={cn(
+                                        "flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all",
+                                        showWinnersOnly
+                                            ? "bg-green-600 text-white"
+                                            : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                                    )}
+                                >
+                                    <Award className="w-4 h-4" />
+                                    {showWinnersOnly ? 'Showing Winners' : 'Show Winners Only'}
+                                </button>
+                                <button
+                                    onClick={() => setShowProfitCalc(true)}
+                                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-all"
+                                >
+                                    <Calculator className="w-4 h-4" />
+                                    Profit Calculator
+                                </button>
+                            </div>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => exportToCSV(data.results, keyword)}
+                                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium transition-all"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Export CSV
+                                </button>
+                                <button
+                                    onClick={() => exportToJSON(data.results, keyword, data.summary)}
+                                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-all"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    Export JSON
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Split View: Chart + Top Products */}
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+                            {/* Market Share Chart */}
+                            <div className="lg:col-span-1 bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-6">
+                                <h3 className="text-xl font-bold mb-6 text-slate-200">Market Dominance</h3>
+                                <div className="h-[400px]">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart data={data.results.slice(0, 10)} layout="vertical" margin={{ left: 0 }}>
+                                            <XAxis type="number" hide />
+                                            <YAxis
+                                                dataKey="title"
+                                                type="category"
+                                                width={100}
+                                                tickFormatter={(val) => val.length > 15 ? val.substring(0, 15) + '...' : val}
+                                                tick={{ fill: '#94a3b8', fontSize: 12 }}
+                                            />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
+                                                formatter={(value) => [`$${value.toLocaleString()}`, 'Revenue']}
+                                                labelFormatter={(label) => label.substring(0, 50)}
+                                            />
+                                            <Bar dataKey="est_revenue" radius={[0, 4, 4, 0]}>
+                                                {data.results.slice(0, 10).map((entry, index) => (
+                                                    <Cell key={`cell-${index}`} fill={index === 0 ? '#818cf8' : '#4f46e5'} fillOpacity={index === 0 ? 1 : 0.6} />
+                                                ))}
+                                            </Bar>
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            </div>
+
+                            {/* Product List */}
+                            <div className="lg:col-span-2 space-y-3">
+                                {(() => {
+                                    const visible = sortProducts(filterVisibleProducts(data.results))
+                                    const winners = data.summary.verdicts?.['Strong research candidate'] || 0
+                                    return (
+                                        <>
+                                            <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                                                <div>
+                                                    <h3 className="text-base font-bold text-slate-100">Top Opportunities</h3>
+                                                    <span className="text-xs text-slate-400">
+                                                        Showing {visible.length} of {data.results.length} products
+                                                        {winners > 0 && <> · <span className="font-semibold text-emerald-400">{winners} winner{winners === 1 ? '' : 's'}</span></>}
+                                                    </span>
+                                                    {data.summary.filter_mode === 'review_fallback' && (
+                                                        <span className="mt-1 block text-xs text-amber-300">No products met every preference. Showing valid candidates for additional validation.</span>
+                                                    )}
+                                                </div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <div className="flex overflow-hidden rounded-lg border border-slate-700">
+                                                        <button
+                                                            onClick={() => setViewMode('table')}
+                                                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${viewMode === 'table' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+                                                        >
+                                                            <Table2 className="h-3.5 w-3.5" /> Table
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setViewMode('cards')}
+                                                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${viewMode === 'cards' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+                                                        >
+                                                            <LayoutGrid className="h-3.5 w-3.5" /> Cards
+                                                        </button>
+                                                    </div>
+                                                    <select
+                                                        value={sortBy}
+                                                        onChange={(e) => setSortBy(e.target.value)}
+                                                        className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-200"
+                                                    >
+                                                        <option value="score">Opportunity Score</option>
+                                                        <option value="verdict">Verdict</option>
+                                                        <option value="revenue">Revenue</option>
+                                                        <option value="sales">Sales</option>
+                                                        <option value="margin">Margin</option>
+                                                        <option value="profit">Profit/unit</option>
+                                                        <option value="price">Price</option>
+                                                        <option value="reviews">Reviews</option>
+                                                        <option value="bsr">BSR</option>
+                                                        <option value="sellers">Sellers</option>
+                                                    </select>
+                                                    <button
+                                                        onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                                                        className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-700"
+                                                        title="Toggle sort direction"
+                                                    >
+                                                        {sortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {viewMode === 'table' ? (
+                                                <ResultsTable
+                                                    products={visible}
+                                                    sortBy={sortBy}
+                                                    sortOrder={sortOrder}
+                                                    onSort={handleSortColumn}
+                                                    selectedForComparison={selectedForComparison}
+                                                    onToggleComparison={toggleComparison}
+                                                    onAddToWatchlist={addToWatchlist}
+                                                    onAddToTracking={addToTracking}
+                                                    watchlist={watchlist}
+                                                    trackedProducts={trackedProducts}
+                                                    onRowClick={setSelectedProduct}
+                                                />
+                                            ) : (
+                                                <div className="grid gap-4">
+                                                    {visible.map((product, idx) => (
+                                                        <ProductCard
+                                                            key={product.asin}
+                                                            product={product}
+                                                            rank={idx + 1}
+                                                            onClick={() => setSelectedProduct(product)}
+                                                            onToggleComparison={toggleComparison}
+                                                            onAddToWatchlist={addToWatchlist}
+                                                            onAddToTracking={addToTracking}
+                                                            isSelected={selectedForComparison.find(p => p.asin === product.asin)}
+                                                            isTracked={trackedProducts.find(p => p.asin === product.asin)}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </>
+                                    )
+                                })()}
+                            </div>
+
+                        </div>
+                    </motion.div>
+                )}
+            </div>
+
+            {/* Profit Calculator Modal */}
+            <AnimatePresence>
+                {showProfitCalc && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setShowProfitCalc(false)}
+                            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.95 }}
+                            className="relative z-10 w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-6"
+                        >
+                            <div className="flex justify-between items-center mb-6">
+                                <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+                                    <Calculator className="w-6 h-6 text-indigo-400" />
+                                    Profit Calculator
+                                </h2>
+                                <button onClick={() => setShowProfitCalc(false)} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
+                                    <CloseIcon className="w-6 h-6 text-slate-400" />
+                                </button>
+                            </div>
+                            <div className="text-center text-slate-400 py-8">
+                                <Calculator className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+                                <p>Profit calculator coming soon!</p>
+                                <p className="text-sm mt-2">Use the product details to see profit breakdown</p>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            {/* Product Detail Modal */}
+            <AnimatePresence>
+                {selectedProduct && (
+                    <ProductDetailModal
+                        product={selectedProduct}
+                        onClose={() => setSelectedProduct(null)}
+                    />
+                )}
+            </AnimatePresence>
+
+            {/* Slide-out Panels */}
+            <AnimatePresence>
+                {showSavedSearches && <SavedSearchesPanel />}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showWatchlist && <WatchlistPanel />}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showTracking && <TrackingPanel />}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showComparison && <ComparisonModal />}
+            </AnimatePresence>
+
+            {/* AI Chat Interface */}
+            <ChatInterface />
+        </div>
+    )
+}
+
+function StatCard({ title, value, icon: Icon, color }) {
+    return (
+        <motion.div
+            whileHover={{ y: -5 }}
+            className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-6 flex flex-col justify-between h-32"
+        >
+            <div className="flex justify-between items-start">
+                <span className="text-slate-400 font-medium text-sm uppercase">{title}</span>
+                <div className={`p-2 rounded-lg bg-slate-700/50 ${color}`}>
+                    <Icon className="w-5 h-5" />
+                </div>
+            </div>
+            <span className="text-3xl font-bold text-slate-100">{value}</span>
+        </motion.div>
+    )
+}
+
+function ProductCard({ product, rank, onClick, onToggleComparison, onAddToWatchlist, onAddToTracking, isSelected, isTracked }) {
+    const isVetoed = product.is_vetoed
+    const isWinner = product.winning_product?.decision === 'Strong research candidate'
+
+    return (
+        <motion.div
+            layoutId={`product-${product.asin}`}
+            onClick={onClick}
+            initial={{ opacity: 0, x: 20 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            whileHover={{ scale: 1.01, backgroundColor: 'rgba(30, 41, 59, 1)' }}
+            viewport={{ once: true }}
+            className={cn(
+                "group relative bg-slate-800 rounded-xl border p-5 transition-all cursor-pointer",
+                isVetoed ? "border-red-500/30 bg-red-900/10" :
+                    isWinner ? "border-green-500/50 bg-green-900/10" :
+                        "border-slate-700 hover:border-indigo-500/50"
+            )}
+        >
+            {/* NEW: Comparison, Watchlist & Tracking Controls */}
+            <div className="absolute top-3 right-3 flex gap-2 z-10">
+                <label
+                    className="flex items-center gap-1 px-2 py-1 bg-slate-900/80 rounded hover:bg-slate-800 cursor-pointer"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <input
+                        type="checkbox"
+                        checked={!!isSelected}
+                        onChange={(e) => {
+                            e.stopPropagation()
+                            onToggleComparison(product)
+                        }}
+                        className="w-4 h-4 rounded border-slate-600 text-indigo-600"
+                    />
+                    <span className="text-xs text-slate-400">Compare</span>
+                </label>
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation()
+                        onAddToWatchlist(product)
+                    }}
+                    className="p-1.5 bg-slate-900/80 rounded hover:bg-slate-800"
+                    title="Add to Watchlist"
+                >
+                    <Award className="w-4 h-4 text-yellow-400" />
+                </button>
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation()
+                        onAddToTracking(product)
+                    }}
+                    className={cn(
+                        "p-1.5 rounded",
+                        isTracked
+                            ? "bg-indigo-600/80 hover:bg-indigo-500"
+                            : "bg-slate-900/80 hover:bg-slate-800"
+                    )}
+                    title={isTracked ? "Already Tracking" : "Track Price & BSR"}
+                >
+                    <Eye className={cn("w-4 h-4", isTracked ? "text-white" : "text-indigo-400")} />
+                </button>
+            </div>
+
+            <div className="flex flex-col md:flex-row gap-6">
+                {/* Rank */}
+                <div className="flex-shrink-0 flex items-center justify-center w-16 text-2xl font-bold text-slate-500">
+                    #{rank}
+                </div>
+
+                {/* Content */}
+                <div className="flex-grow space-y-3">
+                    <div className="flex justify-between items-start gap-4">
+                        <h3 className="text-lg font-semibold text-slate-200 group-hover:text-indigo-400 transition-colors line-clamp-2">
+                            {product.title}
+                        </h3>
+                        <div className="flex gap-2">
+                            {isWinner && (
+                                <span className="px-3 py-1 rounded-full bg-green-500/20 text-green-400 text-xs font-bold border border-green-500/30 flex items-center whitespace-nowrap gap-1">
+                                    <Award className="w-3 h-3" /> WINNER
+                                </span>
+                            )}
+                            {isVetoed && (
+                                <span className="px-3 py-1 rounded-full bg-red-500/20 text-red-400 text-xs font-bold border border-red-500/20 flex items-center whitespace-nowrap gap-1">
+                                    <AlertTriangle className="w-3 h-3" /> VETOED
+                                </span>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm pointer-events-none">
+                        <div className="bg-slate-900/50 rounded-lg p-3">
+                            <span className="block text-slate-500 text-xs mb-1">Price</span>
+                            <span className="block text-white font-mono">${product.price?.toFixed(2)}</span>
+                        </div>
+                        <div className="bg-slate-900/50 rounded-lg p-3">
+                            <span className="block text-slate-500 text-xs mb-1">Est. Revenue</span>
+                            <span className="block text-green-400 font-mono font-bold">${product.est_revenue?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                        </div>
+                        <div className="bg-slate-900/50 rounded-lg p-3">
+                            <span className="block text-slate-500 text-xs mb-1">Est. Sales</span>
+                            <span className="block text-blue-400 font-mono">{Math.round(product.estimated_sales)?.toLocaleString()}/mo</span>
+                        </div>
+                        <div className="bg-slate-900/50 rounded-lg p-3">
+                            <span className="block text-slate-500 text-xs mb-1">Market Share</span>
+                            <span className="block text-purple-400 font-mono">{product.market_share?.toFixed(1)}%</span>
+                        </div>
+                    </div>
+                    {product.winning_product?.review_flags?.length > 0 && (
+                        <div className="mt-3 border-l-2 border-amber-400/70 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
+                            Review: {product.winning_product.review_flags.map(flag => flag.replaceAll('_', ' ')).join(' · ')}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </motion.div>
+    )
+}
+
+function ProductDetailModal({ product, onClose }) {
+
+    // Prepare data for Chart
+    // Prepare data for Chart
+    const chartData = [
+        { subject: 'Demand', A: product.score_breakdown?.demand ?? 0, fullMark: 100 },
+        { subject: 'Competition', A: product.score_breakdown?.competition ?? 0, fullMark: 100 },
+        { subject: 'Profit', A: product.score_breakdown?.profit ?? 0, fullMark: 100 },
+    ]
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={onClose}
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+
+            <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="relative z-10 w-full max-w-4xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden max-h-[90vh] overflow-y-auto"
+            >
+                {/* Header */}
+                <div className="p-6 border-b border-slate-700 flex justify-between items-start gap-4">
+                    <div>
+                        <h2 className="text-2xl font-bold text-white mb-2">{product.title}</h2>
+                        <a href={product.url} target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 text-sm flex items-center gap-1">
+                            View on Amazon ↗
+                        </a>
+                    </div>
+                    <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
+                        <CloseIcon className="w-6 h-6 text-slate-400" />
+                    </button>
+                </div>
+
+                <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+                    {/* Charts & Score */}
+                    <div className="space-y-6">
+                        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
+                            <h3 className="text-lg font-semibold text-slate-300 mb-4 text-center">Opportunity Breakdown</h3>
+                            <div className="h-[250px] w-full">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <RadarChart cx="50%" cy="50%" outerRadius="80%" data={chartData}>
+                                        <PolarGrid stroke="#334155" />
+                                        <PolarAngleAxis dataKey="subject" tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                                        <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
+                                        <Radar
+                                            name="Score"
+                                            dataKey="A"
+                                            stroke="#818cf8"
+                                            strokeWidth={3}
+                                            fill="#6366f1"
+                                            fillOpacity={0.3}
+                                        />
+                                        <Tooltip
+                                            contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f1f5f9' }}
+                                        />
+                                    </RadarChart>
+                                </ResponsiveContainer>
+                            </div>
+                            <div className="text-center mt-2">
+                                <span className="text-4xl font-bold text-white">{product.enhanced_score}</span>
+                                <span className="text-slate-500 text-lg">/100</span>
+                                <p className="text-sm text-slate-400 mt-1">Total Opportunity Score</p>
+                            </div>
+                        </div>
+
+                        {/* Financials */}
+                        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
+                            <h3 className="text-lg font-semibold text-slate-300 mb-4">Financial Analysis</h3>
+                            <div className="space-y-3">
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-slate-400">Monthly Revenue</span>
+                                    <span className="text-white font-mono font-bold">${product.est_revenue?.toLocaleString()}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-slate-400">Est. Profit (Net)</span>
+                                    <span className="text-green-400 font-mono font-bold">${product.est_profit?.toFixed(2)} / unit</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-slate-400">Margin</span>
+                                    <span className={cn("font-mono font-bold", product.margin > 20 ? "text-green-400" : "text-yellow-400")}>
+                                        {product.margin?.toFixed(0)}%
+                                    </span>
+                                </div>
+                                <div className="h-px bg-slate-700 my-2" />
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-slate-400">Referral Fee</span>
+                                    <span className="text-slate-300">${product.fees_breakdown?.referral?.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-slate-400">FBA Fee</span>
+                                    <span className="text-slate-300">${product.fees_breakdown?.fba?.toFixed(2)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Text Details */}
+                    <div className="space-y-6">
+                        {/* Risk Analysis */}
+                        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
+                            <h3 className="text-lg font-semibold text-slate-300 mb-4">Risk Assessment</h3>
+                            <div className="space-y-4">
+                                <div>
+                                    <span className="text-xs font-bold text-slate-500 uppercase">Brand Risk</span>
+                                    <div className={cn("mt-1 flex items-center gap-2",
+                                        product.risks?.brand_risk === 'CRITICAL' ? "text-red-400" :
+                                            product.risks?.brand_risk === 'HIGH' ? "text-orange-400" : "text-green-400"
+                                    )}>
+                                        {product.risks?.brand_risk === 'CRITICAL' || product.risks?.brand_risk === 'HIGH' ? <AlertTriangle className="w-4 h-4" /> : null}
+                                        <span className="font-medium">{product.risks?.brand_risk}</span>
+                                    </div>
+                                    <p className="text-xs text-slate-500 mt-1">{product.risks?.brand_reason}</p>
+                                </div>
+                                <div>
+                                    <span className="text-xs font-bold text-slate-500 uppercase">Hazmat Status</span>
+                                    <div className={cn("mt-1", product.risks?.hazmat ? "text-red-400" : "text-green-400")}>
+                                        {product.risks?.hazmat ? "⚠️ HAZMAT WARNING" : "✅ CLEAR"}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Veto Details */}
+                        {product.is_vetoed && (
+                            <div className="bg-red-900/20 rounded-xl p-6 border border-red-500/30">
+                                <h3 className="text-lg font-semibold text-red-400 mb-2 flex items-center gap-2">
+                                    <AlertTriangle className="w-5 h-5" /> Veto Reasons
+                                </h3>
+                                <ul className="list-disc list-inside space-y-1 text-red-200/80 text-sm">
+                                    {(Array.isArray(product.veto_reasons) ? product.veto_reasons : [product.veto_reasons]).map((reason, i) => (
+                                        <li key={i}>{reason}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+
+                        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
+                            <h3 className="text-lg font-semibold text-slate-300 mb-4">Product Specs</h3>
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                                <div>
+                                    <span className="block text-slate-500 text-xs">Reviews</span>
+                                    <span className="text-white">{product.reviews?.toLocaleString()}</span>
+                                </div>
+                                <div>
+                                    <span className="block text-slate-500 text-xs">Rating</span>
+                                    <span className="text-white">⭐ {product.rating}</span>
+                                </div>
+                                <div>
+                                    <span className="block text-slate-500 text-xs">BSR</span>
+                                    <span className="text-white">#{product.bsr?.toLocaleString()}</span>
+                                </div>
+                                <div>
+                                    <span className="block text-slate-500 text-xs">Category</span>
+                                    <span className="text-white truncate">{product.category}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </motion.div>
+        </div>
+    )
+}
+
+export default ProductHunter
