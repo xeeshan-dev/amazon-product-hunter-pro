@@ -1,5 +1,8 @@
 # Amazon Hunter Pro 🚀
 
+For a detailed phase-by-phase map of the current implementation and direct
+links to the relevant code, see [IMPLEMENTATION_REFERENCE.md](IMPLEMENTATION_REFERENCE.md).
+
 Amazon FBA product research platform with a React/Vite frontend and FastAPI backend for scraping, scoring, keyword research, and tracking workflows.
 
 ## Canonical Runtime
@@ -127,6 +130,11 @@ Product data collection is routed through `src/providers/`.
 
 The current Amazon scraper still produces some legacy estimate fields for compatibility. Those calculations are isolated behind the provider boundary now and can be moved into analytics services in the next refactor without changing the API entrypoint again.
 
+Canonical tracking refreshes also use `ProductDataProvider.get_product()`; the
+FastAPI application and canonical tracking service do not call `AmazonScraper`
+directly. The HTML provider remains the only active adapter that depends on the
+legacy scraper.
+
 ### Search Pipeline
 
 `POST /api/search` delegates to `web_app/backend/services/search_pipeline.py`.
@@ -142,8 +150,42 @@ The current synchronous request path is organized into explicit stages:
 7. Enrich seller data only when seller filters require it.
 8. Apply seller filters.
 9. Build summary, market share, sorting, and the existing response schema.
+10. Persist each response-visible result in the canonical search, product, and
+    snapshot tables before returning the response.
 
 The API response shape and scoring weights are intentionally preserved. Fee/profit, sales estimation, risk, and opportunity recommendations are now isolated behind analytics services.
+
+### Persistent Search Data
+
+Every successful `POST /api/search` creates a canonical `Search` record. The
+route remains public: searches without a bearer token are stored with a null
+`user_id`; a valid supplied token associates the search with that user.
+
+Each response-visible product is upserted by `(asin, marketplace)`, and a new
+immutable `ProductSnapshot` is created for its current price, seller,
+analytics, and raw normalized data. `SearchResult` records preserve the search
+rank, snapshot, score, and recommendation. Persistence runs as one database
+transaction; a failed write rolls back the entire search record and returns a
+safe API error.
+
+The route currently exposes up to 50 ranked products, so those 50 are the
+products persisted for a request. The summary can still describe all products
+that passed the filters, preserving the pre-existing API contract.
+
+### Historical Intelligence
+
+`HistoryService` reads immutable canonical `ProductSnapshot` observations and
+provides price, BSR, review, sales, margin, opportunity-score, and timeline
+queries. It reports deterministic `Improving`, `Stable`, `Declining`, or
+`Insufficient Data` trends; BSR correctly treats a lower value as an
+improvement. Freshness is `Fresh`, `Aging`, `Stale`, or `Unavailable`, using
+the configurable `OBSERVATION_FRESH_HOURS` and `OBSERVATION_STALE_HOURS`.
+
+Persistent observations are the source of truth for future reuse. A request
+may reuse a sufficiently fresh observation; stale data should refresh through
+the provider. Redis remains appropriate only for temporary response caching.
+Automatic search reuse is intentionally deferred until it can preserve current
+search-filter semantics and be measured in production.
 
 ### Analytics Services
 
@@ -195,6 +237,70 @@ POST /api/search
   "skip_hazmat": true
 }
 ```
+
+### Product Analyzer
+
+```bash
+# Analyze one ASIN. A missing or stale canonical observation is refreshed
+# through the configured ProductDataProvider.
+GET /api/products/B0EXAMPLE?marketplace=US
+
+# Read immutable observation history and historical metrics.
+GET /api/products/B0EXAMPLE/history?marketplace=US&days=30
+```
+
+The analyzer returns deterministic overview, demand, competition,
+profitability, risk, trends, recommendation, and data-quality sections. It
+does not use an LLM to create marketplace metrics or recommendations.
+
+### Search History and Dashboard Data
+
+These endpoints require a bearer token and expose only the authenticated
+user's persisted searches. Anonymous search remains supported, but anonymous
+searches are not retrievable through history APIs.
+
+```bash
+GET /api/search/history?limit=20&offset=0
+GET /api/search/{search_id}
+GET /api/search/{search_id}/results?limit=50&offset=0
+GET /api/dashboard
+```
+
+Search detail and result requests for another user's search return `404`, so
+the API does not reveal that a private search exists.
+
+### Account, Usage, and Market Data
+
+Authenticated accounts can read their current plan, recorded usage, and
+configured limits through `GET /api/account`. Usage is collected before limits
+are enforced, so the application can make future plan decisions from real
+activity rather than assumptions.
+
+Read-only market aggregates are available from canonical observations:
+
+```bash
+GET /api/market/categories
+GET /api/market/categories/{category}
+```
+
+These aggregates are explicitly limited to products observed by this
+application; they are not a claim about the entire Amazon category.
+
+### Frontend Structure
+
+The frontend now has a stable application boundary:
+
+```text
+src/app/router.jsx       route selection
+src/pages/ProductHunter.jsx  existing hunt workflow
+src/services/apiClient.js    API base URL and clients
+src/components/              reusable interface components
+src/utils/                   browser/data utilities
+```
+
+`/` and `/hunter` load the current Product Hunter workflow. Planned top-level
+paths are reserved during the incremental migration so they do not break deep
+links; their dedicated views will be introduced with the dashboard and UX work.
 
 ### Keyword Suggestions
 ```bash
