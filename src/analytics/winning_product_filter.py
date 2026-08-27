@@ -1,15 +1,23 @@
-"""Evidence-aware product qualification for sourcing research.
+"""Evidence-aware product qualification for FBA sourcing research.
 
 The filter answers one question per candidate:
 
     "Is this product worth further sourcing and market research?"
 
-Evaluation is intentionally multi-signal. Eight weighted factors
-(opportunity, demand, profitability, competition, risk, seller position,
-data confidence, and market trend) are combined into a composite score with
-weight renormalization over the signals that actually have data. No single
-signal is sufficient to declare a product a winner, and uncertain signals
-are treated as unknown rather than as negative evidence.
+Core philosophy (mirrors manual FBA product hunting):
+  1. Brand-not-selling:  The product brand should NOT be the active seller.
+     If Adidas makes the product, Adidas should not be selling it on Amazon.
+  2. Amazon-not-dominant: Amazon can exist as a seller but must NOT have
+     market dominance (>= amazon_dominance_threshold of the buy-box / offers).
+  3. Healthy demand: BSR-derived sales must be high enough to be worth sourcing.
+  4. Profitable margin: After FBA fees the margin must support a real business.
+  5. Manageable competition: Not price-war territory (>25 FBA sellers).
+  6. Low IP / hazmat risk: Confirmed veto-level risks are hard-excluded.
+
+Eight weighted factors (opportunity, demand, profitability, competition, risk,
+seller_position, data_confidence, market_trend) are combined into a composite
+score.  Weight renormalization is applied over signals that actually have data
+so missing data penalises by reducing confidence, not by tanking the score.
 """
 from __future__ import annotations
 
@@ -17,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 try:
     from analytics.trends import TrendDirection, classify_trend
-except ImportError:  # pragma: no cover - direct script-style imports
+except ImportError:
     from src.analytics.trends import TrendDirection, classify_trend
 
 
@@ -26,8 +34,7 @@ WORTH_VERDICT = "Worth researching"
 VALIDATION_VERDICT = "Needs validation"
 DEPRIORITIZE_VERDICT = "Deprioritize"
 
-# Factor weights must sum to 1.0. Factors without data are excluded and the
-# remaining weights are renormalized instead of punishing the candidate.
+# Factor weights must sum to 1.0.
 FACTOR_WEIGHTS: Dict[str, float] = {
     "opportunity": 0.16,
     "demand": 0.18,
@@ -47,9 +54,32 @@ RISK_FLAG_HAZMAT = "hazmat_flag_requires_manual_validation"
 _CLEAN_BRAND_RISK = {None, "", "SAFE", "safe", "LOW", "low"}
 _MEDIUM_BRAND_RISK = {"MEDIUM", "medium", "MODERATE", "moderate"}
 
+# Amazon market dominance threshold.
+# If Amazon's estimated revenue share of this search exceeds this value
+# AND Amazon is confirmed as a seller, the product is deprioritised.
+AMAZON_DOMINANCE_THRESHOLD = 0.40  # 40 % — configurable
+
+# Maximum FBA seller count before we flag price-war territory.
+MAX_FBA_SELLERS = 25
+# FBA seller sweet spot (3–15 is healthy competition)
+MIN_FBA_SELLERS_SWEETSPOT = 3
+MAX_FBA_SELLERS_SWEETSPOT = 15
+
+# Minimum reviews on top competitors to consider the niche accessible.
+REVIEW_VULNERABILITY_THRESHOLD = 400
+
+# Price sweet-spot for private-label FBA (low enough to impulse-buy,
+# high enough to cover fees and leave margin).
+PRICE_SWEETSPOT_LOW = 15.0
+PRICE_SWEETSPOT_HIGH = 70.0
+
 
 class WinningProductFilter:
-    """Classify candidates without treating uncertain signals as confirmed facts."""
+    """Classify FBA product candidates using multi-signal evidence scoring."""
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     def validate(self, product: Dict[str, Any]) -> List[str]:
         errors = []
@@ -67,20 +97,75 @@ class WinningProductFilter:
         request,
         history: Optional[Dict[str, List[Optional[float]]]] = None,
     ) -> Dict[str, Any]:
+        # ---- Normalise key metrics -----------------------------------------
         score = self._number(product.get("enhanced_score"))
         sales = self._number(product.get("estimated_sales"))
         margin = self._number(product.get("margin"))
+        price = self._number(product.get("price"))
         raw_confidence = product.get("_search_confidence")
         confidence = float(raw_confidence) if raw_confidence is not None else 0.5
         seller = product.get("seller_info") or {}
         risks = product.get("risks") or {}
 
+        # ---- Brand-owns-listing detection ---------------------------------
+        # "The brand should not be the one selling it."
+        # We check two signals:
+        #   a) seller_name substring-matches the product brand (existing logic)
+        #   b) the listing appears to be a brand-direct storefront (new)
+        brand = (product.get("brand") or "").strip().lower()
+        seller_name = (seller.get("seller_name") or "").strip().lower()
+        confirmed_brand_owner = bool(
+            brand and seller_name and (brand in seller_name or seller_name in brand)
+        )
+        # Additional: if brand appears in title as "Visit the X Store" style
+        # this is a strong signal the brand itself owns the listing.
+        title_lower = (product.get("title") or "").lower()
+        brand_storefront_signal = bool(
+            brand and (
+                f"visit the {brand}" in title_lower
+                or f"by {brand}" in title_lower
+                or seller_name == brand
+            )
+        )
+        confirmed_brand_owner = confirmed_brand_owner or brand_storefront_signal
+
+        # ---- Amazon market dominance detection ----------------------------
+        # "Amazon should not have market dominance."
+        # We consider Amazon dominant when:
+        #   a) Amazon is confirmed as a seller, AND
+        #   b) this product's estimated revenue share within the search
+        #      result set is above AMAZON_DOMINANCE_THRESHOLD.
+        # market_share is set by the pipeline as (est_revenue / total_market_revenue)*100
+        confirmed_amazon_seller = bool(seller.get("amazon_seller"))
+        product_market_share_pct = self._number(product.get("market_share"))
+        amazon_dominant = (
+            confirmed_amazon_seller
+            and product_market_share_pct >= (AMAZON_DOMINANCE_THRESHOLD * 100)
+        )
+
+        # ---- Strict match (meets every preference numerically) ------------
+        strict_match = (
+            sales >= request.min_sales
+            and sales <= request.max_sales
+            and margin >= request.min_margin
+        )
+
+        # ---- Confirmed conflict (hard exclude when requested) -------------
+        confirmed_conflict = (
+            (request.skip_amazon_seller and confirmed_amazon_seller)
+            or (request.skip_brand_seller and confirmed_brand_owner)
+        )
+
+        # ---- Confirmed major risk (IP / hazmat veto) ----------------------
+        confirmed_major_risk = (
+            (request.skip_risky_brands and self._is_veto_level_brand(risks))
+            or (request.skip_hazmat and bool(risks.get("hazmat_veto")))
+        )
+
+        # ---- Review flags & strengths (backward-compat flags) -------------
         review_flags: List[str] = []
         strengths: List[str] = []
 
-        # ------------------------------------------------------------------
-        # Preference flags (kept for backward-compatible API consumers).
-        # ------------------------------------------------------------------
         if sales >= request.min_sales:
             strengths.append("sales_target_met")
         else:
@@ -105,47 +190,27 @@ class WinningProductFilter:
             review_flags.append(RISK_FLAG_HAZMAT)
         if seller.get("data_status") != "observed":
             review_flags.append("seller_data_unavailable")
-        elif (seller.get("total_sellers") or 0) > 20:
+        elif (seller.get("total_sellers") or 0) > MAX_FBA_SELLERS:
             review_flags.append("high_seller_count")
+        if confirmed_brand_owner:
+            review_flags.append("brand_owns_listing")
+        if amazon_dominant:
+            review_flags.append("amazon_market_dominant")
+        if not PRICE_SWEETSPOT_LOW <= price <= PRICE_SWEETSPOT_HIGH:
+            review_flags.append("price_outside_sweetspot")
 
-        # ------------------------------------------------------------------
-        # Confirmed facts (hard gates). Uncertain signals stay as flags;
-        # vetoes are acted on only when they are confirmed.
-        # ------------------------------------------------------------------
-        confirmed_amazon = bool(seller.get("amazon_seller"))
-        seller_name = (seller.get("seller_name") or "").strip().lower()
-        brand = (product.get("brand") or "").strip().lower()
-        confirmed_brand_owner = bool(
-            brand and seller_name and (brand in seller_name or seller_name in brand)
-        )
-        strict_match = (
-            sales >= request.min_sales
-            and sales <= request.max_sales
-            and margin >= request.min_margin
-        )
-        confirmed_conflict = (
-            (request.skip_amazon_seller and confirmed_amazon)
-            or (request.skip_brand_seller and confirmed_brand_owner)
-        )
-        confirmed_major_risk = (
-            (request.skip_risky_brands and self._is_veto_level_brand(risks))
-            or (request.skip_hazmat and bool(risks.get("hazmat_veto")))
-        )
-
-        # ------------------------------------------------------------------
-        # Multi-signal factor scores (0-100 each). Missing evidence is
-        # marked unavailable instead of being scored as a failure.
-        # ------------------------------------------------------------------
+        # ---- Multi-signal factor scores (0-100 each) ----------------------
         factors: Dict[str, Optional[float]] = {
             "opportunity": self._clamp(score),
             "demand": self._demand_score(sales, request),
             "profitability": self._profitability_score(margin, request),
             "competition": self._competition_score(product, seller),
-            "risk": self._risk_score(risks),
+            "risk": self._risk_score(risks, amazon_dominant, confirmed_brand_owner),
             "seller_position": self._seller_position_score(
                 seller,
-                confirmed_amazon,
+                confirmed_amazon_seller,
                 confirmed_brand_owner,
+                amazon_dominant,
                 request.skip_amazon_seller,
                 request.skip_brand_seller,
             ),
@@ -154,16 +219,18 @@ class WinningProductFilter:
         }
         composite = self._weighted_composite(factors)
 
-        # A confirmed scorer veto (IP risk, hazmat, or unsustainable margin)
-        # caps the composite regardless of the remaining evidence.
+        # ---- Hard veto caps composite ------------------------------------
         scorer_vetoed = bool(product.get("is_vetoed")) or confirmed_major_risk
-        if scorer_vetoed:
+        # Brand-owns-listing and Amazon-dominance are soft signals in scoring
+        # but cap the composite when the matching filter is active.
+        soft_conflict = (
+            (request.skip_brand_seller and confirmed_brand_owner)
+            or (request.skip_amazon_seller and amazon_dominant)
+        )
+        if scorer_vetoed or soft_conflict:
             composite = min(composite, 25.0)
 
-        # ------------------------------------------------------------------
-        # Graded verdict. Broad support is required for the top tier so no
-        # single signal can carry a product to "winner".
-        # ------------------------------------------------------------------
+        # ---- Graded verdict ----------------------------------------------
         available_factors = {k: v for k, v in factors.items() if v is not None}
         supporting = sum(1 for value in available_factors.values() if value >= 70)
         weak_core = any(
@@ -176,7 +243,7 @@ class WinningProductFilter:
         )
         low_confidence = available_factors.get("data_confidence", 50) < 45
 
-        if scorer_vetoed:
+        if scorer_vetoed or soft_conflict:
             verdict = DEPRIORITIZE_VERDICT
         elif (
             composite >= 65
@@ -202,6 +269,8 @@ class WinningProductFilter:
             open_risk_flags=open_risk_flags,
             low_confidence=low_confidence,
             scorer_vetoed=scorer_vetoed,
+            amazon_dominant=amazon_dominant,
+            confirmed_brand_owner=confirmed_brand_owner,
         )
         if verdict == STRONG_VERDICT and strengths:
             verdict_reasons = strengths + verdict_reasons
@@ -214,6 +283,8 @@ class WinningProductFilter:
             "strict_match": strict_match,
             "confirmed_seller_conflict": confirmed_conflict,
             "confirmed_major_risk": confirmed_major_risk,
+            "confirmed_brand_owner": confirmed_brand_owner,
+            "amazon_dominant": amazon_dominant,
             "review_flags": review_flags,
             "strengths": strengths,
             "factors": {
@@ -232,9 +303,10 @@ class WinningProductFilter:
             "composite_score": round(composite, 1),
         }
 
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Factor scorers
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+
     def _demand_score(self, sales: float, request) -> float:
         """Score monthly sales against the requested preference band."""
         if sales <= 0:
@@ -242,7 +314,6 @@ class WinningProductFilter:
         min_sales = float(request.min_sales)
         max_sales = float(request.max_sales)
         if sales > max_sales:
-            # Demand is stronger than requested: healthy signal, mild note.
             return 82.0
         if sales >= min_sales:
             span = max_sales - min_sales
@@ -269,19 +340,24 @@ class WinningProductFilter:
     def _competition_score(
         self, product: Dict[str, Any], seller: Dict[str, Any]
     ) -> float:
-        """Prefer the scorer competition pillar; fall back to review moat."""
+        """Prefer the scorer competition pillar; fall back to review moat + seller count."""
         breakdown = product.get("score_breakdown") or {}
         pillar = breakdown.get("competition")
         if pillar is not None:
             base = self._clamp(float(pillar))
         else:
             base = self._review_competition(product)
+
+        # Adjust for total seller count
         count = seller.get("total_sellers")
         if isinstance(count, (int, float)):
-            if count > 25:
-                base -= 15.0
-            elif count > 15:
-                base -= 7.0
+            if count > MAX_FBA_SELLERS:
+                base -= 20.0  # Price-war territory
+            elif count > MAX_FBA_SELLERS_SWEETSPOT:
+                base -= 8.0
+            elif count < MIN_FBA_SELLERS_SWEETSPOT and count > 0:
+                base -= 5.0  # Suspiciously low — may be ungated niche with little demand
+
         return self._clamp(base)
 
     @staticmethod
@@ -299,48 +375,66 @@ class WinningProductFilter:
             return 52.0
         return 32.0
 
-    def _risk_score(self, risks: Dict[str, Any]) -> float:
+    def _risk_score(
+        self,
+        risks: Dict[str, Any],
+        amazon_dominant: bool,
+        confirmed_brand_owner: bool,
+    ) -> float:
+        """Combine IP/hazmat risk with seller structure risk."""
         brand_risk = risks.get("brand_risk")
         hazmat = bool(risks.get("hazmat"))
+
         if hazmat:
-            return 25.0
-        if brand_risk in _CLEAN_BRAND_RISK:
-            return 100.0
-        if brand_risk in _MEDIUM_BRAND_RISK:
-            return 60.0
-        return 25.0
+            return 20.0
+        if brand_risk not in _CLEAN_BRAND_RISK:
+            base = 25.0 if brand_risk not in _MEDIUM_BRAND_RISK else 55.0
+        else:
+            base = 100.0
+
+        # Seller structure risk
+        if amazon_dominant:
+            base -= 30.0
+        if confirmed_brand_owner:
+            base -= 25.0
+
+        return self._clamp(base)
 
     def _seller_position_score(
         self,
         seller: Dict[str, Any],
         confirmed_amazon: bool,
         confirmed_brand_owner: bool,
+        amazon_dominant: bool,
         skip_amazon: bool,
         skip_brand: bool,
     ) -> Optional[float]:
-        """Score the competitive seller landscape; None when not observed."""
+        """Score the seller landscape. None when not observed."""
         if seller.get("data_status") != "observed":
             return None
 
         count = seller.get("total_sellers")
         if isinstance(count, (int, float)) and count > 0:
-            if count <= 15:
-                base = 95.0
-            elif count <= 25:
-                base = 78.0
+            if MIN_FBA_SELLERS_SWEETSPOT <= count <= MAX_FBA_SELLERS_SWEETSPOT:
+                base = 95.0   # Sweet spot
+            elif count <= MAX_FBA_SELLERS:
+                base = 75.0   # Manageable
             else:
-                base = 60.0
+                base = 45.0   # Price-war risk
         else:
-            base = 70.0
+            base = 65.0
 
-        if confirmed_amazon or confirmed_brand_owner:
-            # Dominant Amazon / brand-owner presence. When the matching skip
-            # filter is active the pipeline removes the candidate as a
-            # confirmed conflict; otherwise it remains a heavy penalty.
-            conflict_requested = (confirmed_amazon and skip_amazon) or (
-                confirmed_brand_owner and skip_brand
-            )
-            base *= 0.2 if conflict_requested else 0.35
+        # Brand-owns-listing: heavy penalty
+        if confirmed_brand_owner:
+            base *= 0.2 if skip_brand else 0.4
+
+        # Amazon dominance: heavy penalty (separate from brand-owner)
+        if amazon_dominant:
+            base *= 0.2 if skip_amazon else 0.35
+        elif confirmed_amazon:
+            # Amazon present but not dominant — softer penalty
+            base *= 0.55 if skip_amazon else 0.70
+
         return self._clamp(base)
 
     def _trend_score(
@@ -368,7 +462,6 @@ class WinningProductFilter:
             directions["price"] = classify_trend(price)
         bsr = history.get("bsr")
         if bsr:
-            # A lower best-seller rank means improving demand.
             directions["bsr"] = classify_trend(bsr, lower_is_better=True)
         reviews = history.get("reviews")
         if reviews:
@@ -392,9 +485,13 @@ class WinningProductFilter:
             label = "Stable"
         return label, detail
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _weighted_composite(factors: Dict[str, Optional[float]]) -> float:
-        """Renormalize weights over available signals instead of penalizing gaps."""
+        """Renormalize weights over available signals instead of penalising gaps."""
         total_weight = sum(
             FACTOR_WEIGHTS[name]
             for name, value in factors.items()
@@ -420,10 +517,16 @@ class WinningProductFilter:
         open_risk_flags: bool,
         low_confidence: bool,
         scorer_vetoed: bool,
+        amazon_dominant: bool,
+        confirmed_brand_owner: bool,
     ) -> List[str]:
         reasons: List[str] = []
         if scorer_vetoed:
             reasons.append("confirmed_veto_condition")
+        if amazon_dominant:
+            reasons.append("amazon_has_market_dominance")
+        if confirmed_brand_owner:
+            reasons.append("brand_owns_listing")
         if open_risk_flags:
             reasons.append("unresolved_risk_flags_require_review")
         if low_confidence:
@@ -444,7 +547,6 @@ class WinningProductFilter:
 
     @staticmethod
     def _is_veto_level_brand(risks: Dict[str, Any]) -> bool:
-        """Only an explicit veto-level brand result counts as a confirmed fact."""
         return bool(risks.get("brand_veto"))
 
     @staticmethod

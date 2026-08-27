@@ -226,10 +226,13 @@ class EnhancedOpportunityScorer:
             pass  # Handled in competition pillar
         
         # Check 4: Extremely low margin (< 10%)
-        margin = product.get('profit_margin', 0)
+        # `profit_margin` is set by SearchPipeline._apply_financials which runs
+        # before _apply_score, so this value reflects the actual calculated margin.
+        # `margin` (alias) is also set — both are always identical.
+        margin = product.get('profit_margin') or product.get('margin') or 0
         if margin < 10:
             return (True, VetoReason.LOW_MARGIN,
-                   f"Profit margin of {margin}% is too low for sustainable business")
+                   f"Profit margin of {margin:.1f}% is too low for sustainable business")
         
         return (False, VetoReason.NONE, "")
     

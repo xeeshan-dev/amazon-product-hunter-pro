@@ -213,10 +213,7 @@ class AmazonScraper:
                     estimated_cost = price * 0.25  # Assume 25% of price is product cost
                     product['estimated_margin'] = ((price - fba_fees - estimated_cost) / price) * 100
             
-            # Analyze seasonality
             product['seasonality'] = self._analyze_seasonality(product.get('asin', ''))
-            
-            # Add search volume estimate
             product['search_volume'] = self._estimate_search_volume(product.get('title', ''))
             
             # Market share is calculated in post-processing
@@ -230,7 +227,8 @@ class AmazonScraper:
             product['search_volume'] = 0
             product['market_share'] = 0
 
-    def _add_listing_quality_score(self, product: Dict):
+    def _add_listing_quality_score_UNUSED(self, product: Dict):
+        # Not called anywhere. Safe to delete in a future cleanup pass.
         # Set default score
         score = 0
         try:
@@ -680,7 +678,8 @@ class AmazonScraper:
         except:
             return 0
             
-    def _analyze_competition(self, product: Dict):
+    def _analyze_competition_UNUSED(self, product: Dict):
+        # Not called anywhere. Kept temporarily for reference; safe to delete.
         try:
             # Set default values first
             product['competition_score'] = 5.0
@@ -744,10 +743,9 @@ class AmazonScraper:
             # Normalize score between 0-10
             product['competition_score'] = max(0, min(10, score))
             
-            # Add trend data
-            product['price_trend'] = self._analyze_price_trend(product['asin'])
-            product['demand_trend'] = self._analyze_demand_trend(product['asin'])
-            product['competition_trend'] = self._analyze_seller_trend(product['asin'])
+            product['price_trend'] = 'Stable'
+            product['demand_trend'] = 'Stable'
+            product['competition_trend'] = 'Stable'
             
         except Exception as e:
             logger.error(f"Error analyzing competition: {str(e)}")
@@ -795,50 +793,13 @@ class AmazonScraper:
         return sum(1 for keyword in important_keywords if keyword.lower() in text.lower())
 
     def _analyze_seasonality(self, asin: str) -> List[str]:
-        # Determine product seasonality (simplified)
-        try:
-            # This would normally use historical data
-            # For now, return a simple default
-            return ['All Year']
-        except Exception:
-            return ['All Year']
-
-    def _analyze_price_trend(self, asin: str) -> str:
-        # Analyze price trends (simplified)
-        try:
-            # This would normally analyze historical price data
-            return 'Stable'
-        except Exception:
-            return 'Stable'
-
-    def _analyze_demand_trend(self, asin: str) -> str:
-        # Analyze demand trends (simplified)
-        try:
-            # This would normally analyze historical BSR and sales data
-            return 'Stable'
-        except Exception:
-            return 'Stable'
-
-    def _analyze_seller_trend(self, asin: str) -> str:
-        # Analyze competition trends (simplified)
-        try:
-            # This would normally analyze historical seller data
-            return 'Stable'
-        except Exception:
-            return 'Stable'
+        # Seasonality requires historical BSR data not available at scrape time.
+        return ['All Year']
 
     def _estimate_search_volume(self, title: str) -> int:
-        # Estimate monthly search volume using heuristics
-        try:
-            base_volume = 1000
-            keyword_score = len(title.split())
-            if keyword_score < 5:
-                base_volume += 5000 # Head terms
-            elif keyword_score < 10:
-                base_volume += 2000
-            return random.randint(base_volume, base_volume * 2)
-        except Exception:
-            return 0
+        # Returning 0 — reliable search volume requires a keyword API.
+        # Use Amazon autocomplete (/api/keywords) for directional estimates.
+        return 0
 
     def _calculate_market_share(self, product: Dict) -> float:
         # Handled in search_products post-processing

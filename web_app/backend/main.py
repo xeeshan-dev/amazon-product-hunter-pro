@@ -106,12 +106,13 @@ class SearchRequest(BaseModel):
     min_rating: float = Field(3.0, ge=0, le=5)
     skip_risky_brands: bool = True
     skip_hazmat: bool = True
+    # skip_amazon_seller: exclude products where Amazon is the confirmed seller
     skip_amazon_seller: bool = True
+    # skip_brand_seller: exclude products where the brand itself is the seller
     skip_brand_seller: bool = True
     min_margin: float = Field(20.0, ge=-100, le=100)
     min_sales: int = Field(50, ge=0)
     max_sales: int = Field(1000, ge=0)
-    fetch_seller_info: bool = True
 
 
 class ChatRequest(BaseModel):

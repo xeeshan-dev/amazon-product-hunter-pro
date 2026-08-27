@@ -172,15 +172,18 @@ _settings = get_settings()
 
 
 class Config:
-    """Legacy class-attribute config used by older scraper/scoring modules."""
+    """Legacy class-attribute config used by the scraper module.
+
+    Scoring weights (BSR_WEIGHT, REVIEWS_WEIGHT, MARGIN_WEIGHT) have been
+    removed — scoring is now owned exclusively by EnhancedOpportunityScorer
+    in src/analysis/enhanced_scoring.py.
+    FBA fee constants are kept for the scraper's _calculate_fba_fees fallback.
+    """
 
     BASE_URL = _settings.AMAZON_BASE_URL
     MIN_DELAY = _settings.MIN_DELAY_SECONDS
     MAX_DELAY = _settings.MAX_DELAY_SECONDS
     MAX_PAGES = 5
-    BSR_WEIGHT = 0.4
-    REVIEWS_WEIGHT = 0.3
-    MARGIN_WEIGHT = 0.3
     BASE_FBA_FEE = 5.0
     FBA_PERCENTAGE = 0.15
     REFERRAL_FEE_PERCENTAGE = 0.15
