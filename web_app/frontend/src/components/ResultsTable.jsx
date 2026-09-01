@@ -138,9 +138,27 @@ function ResultsTable({
                             <td className="px-2 py-2 font-mono text-slate-400">{(p.reviews || 0).toLocaleString()}</td>
                             <td className="px-2 py-2 font-mono text-slate-400">{p.bsr ? `#${p.bsr.toLocaleString()}` : '–'}</td>
                             <td className="px-2 py-2">
-                                {sellerInfo.data_status === 'observed'
-                                    ? <span className="font-mono text-slate-300">{sellerInfo.total_sellers ?? '–'}{sellerInfo.amazon_seller && <span className="ml-1 font-bold text-orange-400" title="Amazon sells this product">AMZ</span>}</span>
-                                    : <span className="text-slate-600">n/a</span>}
+                                {sellerInfo.data_status === 'observed' ? (
+                                    <div className="flex items-center gap-1">
+                                        <span className="font-mono text-slate-300">{sellerInfo.total_sellers ?? '–'}</span>
+                                        {sellerInfo.amazon_seller && (
+                                            <span className="rounded bg-orange-500/20 px-1 py-0.5 text-[10px] font-bold text-orange-400 ring-1 ring-orange-500/30" title="Amazon sells this product">
+                                                AMZ
+                                            </span>
+                                        )}
+                                        {sellerInfo.brand_is_seller && (
+                                            <span className="rounded bg-purple-500/20 px-1 py-0.5 text-[10px] font-bold text-purple-400 ring-1 ring-purple-500/30" title="Brand sells this product">
+                                                BRD
+                                            </span>
+                                        )}
+                                    </div>
+                                ) : sellerInfo.data_status === 'blocked' ? (
+                                    <span className="text-[10px] text-red-400" title="Seller data blocked">⚠ Blocked</span>
+                                ) : sellerInfo.data_status === 'unavailable' ? (
+                                    <span className="text-[10px] text-amber-500" title="Seller data unavailable">⚠ N/A</span>
+                                ) : (
+                                    <span className="text-slate-600">n/a</span>
+                                )}
                             </td>
                             <td className="px-2 py-2">
                                 <span className={`inline-flex h-7 min-w-[2rem] items-center justify-center rounded-md px-1.5 font-mono text-sm font-bold ring-1 ${scoreChipBg(p.enhanced_score)}`}>

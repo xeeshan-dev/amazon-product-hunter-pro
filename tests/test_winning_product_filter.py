@@ -466,3 +466,191 @@ def test_pipeline_survives_history_lookup_failure():
     assert response["summary"]["total_products"] == 1
     qualification = response["results"][0]["winning_product"]
     assert qualification["trend"] == "Insufficient Data"
+
+
+# ---------------------------------------------------------------------------
+# Seller filtering regression tests - Amazon/brand in ANY offer
+# ---------------------------------------------------------------------------
+
+def test_amazon_in_buybox_only_excludes_when_skip_amazon_seller():
+    """Amazon present only in buy-box → excluded when skip_amazon_seller=True."""
+    product = healthy_product(
+        seller_info={
+            "data_status": "observed",
+            "amazon_seller": True,
+            "brand_is_seller": False,
+            "buy_box_seller_name": "Amazon.com",
+            "total_sellers": 4,
+        },
+    )
+
+    # Without skip filter: penalized but not excluded
+    result_no_skip = WinningProductFilter().evaluate(
+        product, make_request(skip_amazon_seller=False)
+    )
+    assert result_no_skip["confirmed_seller_conflict"] is False
+
+    # With skip filter: hard exclusion
+    result_skip = WinningProductFilter().evaluate(
+        product, make_request(skip_amazon_seller=True)
+    )
+    assert result_skip["confirmed_seller_conflict"] is True
+    assert result_skip["decision"] == DEPRIORITIZE_VERDICT
+    assert "confirmed_amazon_seller" in result_skip["verdict_reasons"]
+
+
+def test_amazon_in_other_offers_not_buybox_excludes_when_skip_amazon_seller():
+    """Amazon present in offer #2-4 but NOT buy-box → still excluded when skip_amazon_seller=True."""
+    product = healthy_product(
+        seller_info={
+            "data_status": "observed",
+            "amazon_seller": True,  # ← Amazon detected in ANY offer
+            "brand_is_seller": False,
+            "buy_box_seller_name": "Independent Seller Co",  # ← buy-box is NOT Amazon
+            "total_sellers": 4,
+        },
+    )
+
+    # With skip filter: hard exclusion (this is the critical fix)
+    result = WinningProductFilter().evaluate(
+        product, make_request(skip_amazon_seller=True)
+    )
+    assert result["confirmed_seller_conflict"] is True
+    assert result["decision"] == DEPRIORITIZE_VERDICT
+    assert "confirmed_amazon_seller" in result["verdict_reasons"]
+
+
+def test_brand_in_buybox_only_excludes_when_skip_brand_seller():
+    """Brand present only in buy-box → excluded when skip_brand_seller=True."""
+    product = healthy_product(
+        brand="BrandOne",
+        seller_info={
+            "data_status": "observed",
+            "amazon_seller": False,
+            "brand_is_seller": True,  # ← Brand detected
+            "buy_box_seller_name": "BrandOne Official Store",
+            "total_sellers": 3,
+        },
+    )
+
+    # Without skip filter: allowed
+    result_no_skip = WinningProductFilter().evaluate(
+        product, make_request(skip_brand_seller=False)
+    )
+    assert result_no_skip["confirmed_seller_conflict"] is False
+
+    # With skip filter: hard exclusion
+    result_skip = WinningProductFilter().evaluate(
+        product, make_request(skip_brand_seller=True)
+    )
+    assert result_skip["confirmed_seller_conflict"] is True
+    assert result_skip["decision"] == DEPRIORITIZE_VERDICT
+    assert "confirmed_brand_owner" in result_skip["verdict_reasons"]
+
+
+def test_brand_in_other_offers_not_buybox_excludes_when_skip_brand_seller():
+    """Brand present in offer #2-4 but NOT buy-box → still excluded when skip_brand_seller=True."""
+    product = healthy_product(
+        brand="Sony",
+        seller_info={
+            "data_status": "observed",
+            "amazon_seller": False,
+            "brand_is_seller": True,  # ← Brand detected in ANY offer (not just buy-box)
+            "buy_box_seller_name": "Third Party Seller LLC",
+            "total_sellers": 5,
+        },
+    )
+
+    # With skip filter: hard exclusion (this is the critical fix)
+    result = WinningProductFilter().evaluate(
+        product, make_request(skip_brand_seller=True)
+    )
+    assert result["confirmed_seller_conflict"] is True
+    assert result["decision"] == DEPRIORITIZE_VERDICT
+    assert "confirmed_brand_owner" in result["verdict_reasons"]
+
+
+def test_seller_data_unavailable_with_strict_filters_excludes():
+    """When seller data unavailable + strict filters ON → exclude (fail-closed)."""
+    product = healthy_product(
+        seller_info={
+            "data_status": "unavailable",  # ← Couldn't fetch seller data
+            "amazon_seller": False,
+            "brand_is_seller": False,
+            "total_sellers": 0,
+        },
+    )
+
+    # Strict filters ON but data unavailable → fail-closed (exclude)
+    result = WinningProductFilter().evaluate(
+        product, make_request(skip_amazon_seller=True, skip_brand_seller=True)
+    )
+    assert result["confirmed_seller_conflict"] is True
+    assert result["decision"] == DEPRIORITIZE_VERDICT
+    assert "seller_data_unavailable_under_strict_filtering" in result["verdict_reasons"]
+
+
+def test_seller_data_blocked_with_strict_filters_excludes():
+    """When seller data blocked + strict filters ON → exclude (fail-closed)."""
+    product = healthy_product(
+        seller_info={
+            "data_status": "blocked",  # ← Bot detection or blocked
+            "amazon_seller": False,
+            "brand_is_seller": False,
+            "total_sellers": 0,
+        },
+    )
+
+    # Strict filters ON but data blocked → fail-closed (exclude)
+    result = WinningProductFilter().evaluate(
+        product, make_request(skip_amazon_seller=True, skip_brand_seller=True)
+    )
+    assert result["confirmed_seller_conflict"] is True
+    assert result["decision"] == DEPRIORITIZE_VERDICT
+    assert "seller_data_unavailable_under_strict_filtering" in result["verdict_reasons"]
+
+
+def test_no_amazon_no_brand_passes_strict_filters():
+    """Product with no Amazon and no brand in offers → passes strict filters."""
+    product = healthy_product(
+        brand="CleanBrand",
+        seller_info={
+            "data_status": "observed",
+            "amazon_seller": False,  # ← No Amazon
+            "brand_is_seller": False,  # ← No brand
+            "buy_box_seller_name": "Independent Seller Co",
+            "total_sellers": 6,
+        },
+    )
+
+    result = WinningProductFilter().evaluate(
+        product, make_request(skip_amazon_seller=True, skip_brand_seller=True)
+    )
+    assert result["confirmed_seller_conflict"] is False
+    assert result["decision"] != DEPRIORITIZE_VERDICT
+    # Should get good scores for clean seller position
+    assert result["factors"]["seller_position"]["available"] is True
+    assert result["factors"]["seller_position"]["score"] >= 85
+
+
+def test_both_amazon_and_brand_present_double_conflict():
+    """Product sold by BOTH Amazon AND brand → double conflict."""
+    product = healthy_product(
+        brand="DoubleTrouble",
+        seller_info={
+            "data_status": "observed",
+            "amazon_seller": True,
+            "brand_is_seller": True,
+            "buy_box_seller_name": "Amazon.com",
+            "total_sellers": 4,
+        },
+    )
+
+    result = WinningProductFilter().evaluate(
+        product, make_request(skip_amazon_seller=True, skip_brand_seller=True)
+    )
+    assert result["confirmed_seller_conflict"] is True
+    assert result["decision"] == DEPRIORITIZE_VERDICT
+    # Both reasons should be present
+    reasons = result["verdict_reasons"]
+    assert "confirmed_amazon_seller" in reasons or "confirmed_brand_owner" in reasons

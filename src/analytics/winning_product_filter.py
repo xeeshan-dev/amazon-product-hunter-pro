@@ -148,9 +148,18 @@ class WinningProductFilter:
         # ---- Confirmed conflict (hard exclude) ----------------------------
         # skip_amazon_seller: exclude if Amazon is ANY seller (not just dominant)
         # skip_brand_seller: exclude if brand owns ANY offer
+        # Fail-closed: if strict filters enabled but seller data unavailable/blocked,
+        # we cannot verify compliance → exclude the product
+        seller_data_unavailable = seller.get("data_status") in ("unavailable", "blocked")
+        fail_closed_exclusion = (
+            (request.skip_amazon_seller or request.skip_brand_seller)
+            and seller_data_unavailable
+        )
+        
         confirmed_conflict = (
             (request.skip_amazon_seller and confirmed_amazon_seller)
             or (request.skip_brand_seller and confirmed_brand_owner)
+            or fail_closed_exclusion
         )
 
         # ---- Strict match (meets every preference numerically) ------------
@@ -225,11 +234,13 @@ class WinningProductFilter:
 
         # ---- Hard veto caps composite ------------------------------------
         scorer_vetoed = bool(product.get("is_vetoed")) or confirmed_major_risk
-        # Brand-owns-listing and Amazon-dominance are soft signals in scoring
-        # but cap the composite when the matching filter is active.
+        # Use strict seller conflict logic: if skip filters are enabled and
+        # Amazon/brand detected in ANY offer (or data unavailable), cap composite.
+        # This ensures products are deprioritized even if they have good other signals.
         soft_conflict = (
             (request.skip_brand_seller and confirmed_brand_owner)
-            or (request.skip_amazon_seller and amazon_dominant)
+            or (request.skip_amazon_seller and confirmed_amazon_seller)
+            or fail_closed_exclusion
         )
         if scorer_vetoed or soft_conflict:
             composite = min(composite, 25.0)
@@ -273,8 +284,9 @@ class WinningProductFilter:
             open_risk_flags=open_risk_flags,
             low_confidence=low_confidence,
             scorer_vetoed=scorer_vetoed,
-            amazon_dominant=amazon_dominant,
+            confirmed_amazon_seller=confirmed_amazon_seller,
             confirmed_brand_owner=confirmed_brand_owner,
+            fail_closed_exclusion=fail_closed_exclusion,
         )
         if verdict == STRONG_VERDICT and strengths:
             verdict_reasons = strengths + verdict_reasons
@@ -521,16 +533,19 @@ class WinningProductFilter:
         open_risk_flags: bool,
         low_confidence: bool,
         scorer_vetoed: bool,
-        amazon_dominant: bool,
+        confirmed_amazon_seller: bool,
         confirmed_brand_owner: bool,
+        fail_closed_exclusion: bool,
     ) -> List[str]:
         reasons: List[str] = []
         if scorer_vetoed:
             reasons.append("confirmed_veto_condition")
-        if amazon_dominant:
-            reasons.append("amazon_has_market_dominance")
+        if confirmed_amazon_seller:
+            reasons.append("confirmed_amazon_seller")
         if confirmed_brand_owner:
-            reasons.append("brand_owns_listing")
+            reasons.append("confirmed_brand_owner")
+        if fail_closed_exclusion:
+            reasons.append("seller_data_unavailable_under_strict_filtering")
         if open_risk_flags:
             reasons.append("unresolved_risk_flags_require_review")
         if low_confidence:

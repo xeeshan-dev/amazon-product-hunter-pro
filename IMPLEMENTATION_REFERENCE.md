@@ -730,8 +730,8 @@ DEFAULT_CURVE = (40000, 0.4)
 ```
 
 **Fix:** Updated the sales estimation formula with 2026-calibrated curves:
-- Doubled multipliers (60000 ? 120000 for Health & Household)
-- Increased exponents (0.4 ? 0.50) for more aggressive estimates
+- Doubled multipliers (60000 → 120000 for Health & Household)
+- Increased exponents (0.4 → 0.50).50) for more aggressive estimates
 - Updated top-100 formula to reflect exponential sales at top ranks
 - Added Tools & Home Improvement category
 - Increased sales cap from 50K to 100K/month
@@ -771,5 +771,213 @@ Search Request ? Provider (scraper) ? Scoring/Risk ? Seller Enrichment (ALL prod
 - [Sales estimator calibration](src/analytics/sales_estimator.py)
 - [Seller analysis implementation](src/analysis/seller_analysis.py)
 - [AOD endpoint scraping](src/scraper/amazon_scraper.py)
+
+---
+
+
+### Critical Bug #3: Comprehensive Seller Filtering Overhaul (September 1, 2026)
+
+**Problem:** Multiple silent failures in seller filtering made "Skip Amazon as Seller" and "Skip Brand as Seller" filters completely unreliable:
+
+1. **Buy-box-only detection:** Previous code only checked the buy-box seller. If Amazon or the brand was selling as offer #2, #3, or #4, they were completely missed.
+2. **Missing brand field:** Many products had empty `brand` values, making brand-seller detection ineffective even when the seller was the brand.
+3. **Silent failures:** When seller data couldn't be fetched (blocked/unavailable), products were marked as "safe" and passed through filters instead of being excluded.
+4. **Hardcoded marketplace:** Seller analysis used hardcoded `amazon.com` URLs instead of marketplace-aware domains (UK/DE/etc).
+
+**Example Failure:**
+- Product has 4 sellers: [Amazon, Brand Official Store, Seller A, Seller B]
+- Buy-box winner: "Seller A"
+- **Old behavior:** Filters passed (only checked buy-box)
+- **User expectation:** Product should be excluded (Amazon AND brand present)
+
+**Impact:**
+- Products with Amazon in offers #2-4 passed through "Skip Amazon" filter
+- Products where brand was seller #2-4 passed through "Skip Brand" filter
+- Users received "winning products" that didn't meet their criteria
+- Critical sourcing decisions made on inaccurate competition data
+
+**Comprehensive Fix (commit 05f67b4):**
+
+#### 1. Seller Analysis Complete Rewrite (`src/analysis/seller_analysis.py`)
+
+**Changes:**
+- Full rewrite from 1,166 lines to scan ALL offers, not just buy-box
+- Fetches AOD (All Offers Display) AJAX endpoint: `/gp/aod/ajax?asin=XXXX`
+- Fallback to `/gp/offer-listing/{asin}` if AOD fails
+- Scans EVERY offer for Amazon seller names
+- Scans EVERY offer seller name against product brand (bidirectional substring match)
+- Added `brand_is_seller` field to `SellerInfo` dataclass
+- Added comprehensive `AMAZON_SELLER_NAMES` set (15+ variants)
+- Added `_is_amazon_seller()` and `_brand_owns_listing()` helper functions
+
+**Key Data Structure:**
+```python
+@dataclass
+class SellerInfo:
+    amazon_seller: bool = False       # True if Amazon in ANY offer
+    brand_is_seller: bool = False     # True if brand in ANY offer
+    buy_box_seller_name: Optional[str] = None
+    total_sellers: int = 0
+    fba_count: int = 0
+    fbm_count: int = 0
+    offers: List[SellerOffer] = field(default_factory=list)
+    data_status: str = "observed"     # observed/unavailable/blocked
+```
+
+**Brand Matching Logic:**
+```python
+def _brand_owns_listing(seller_name: str, brand: str) -> bool:
+    """Bidirectional substring match.
+    
+    Examples:
+    - brand="Sony", seller="Sony Electronics Inc" → True
+    - brand="Adidas", seller="Adidas Official Store" → True
+    - brand="ac" (too short) → False
+    """
+    if len(brand) < 3:
+        return False
+    return brand.lower() in seller_name.lower() or seller_name.lower() in brand.lower()
+```
+
+#### 2. Provider Updates (`src/providers/amazon_html_provider.py`)
+
+**Changes:**
+- `get_sellers()` now accepts `brand=` kwarg
+- Passes brand through to `SellerAnalyzer`
+- `_normalize_seller_summary()` includes `brand_is_seller` field
+
+#### 3. Scraper Integration (`src/scraper/amazon_scraper.py`)
+
+**Changes:**
+- `get_seller_summary()` accepts `brand=` kwarg
+- Passes brand to `SellerAnalyzer.analyze_sellers()`
+- Removed redundant product-page fallback (AOD covers it)
+
+#### 4. Filter Logic Updates (`src/analytics/winning_product_filter.py`)
+
+**Changes:**
+- `confirmed_brand_owner` now uses `brand_is_seller` from SellerInfo as primary signal
+- Renamed `amazon_dominant` → `confirmed_amazon_seller` for clarity
+- Both checks now trigger on ANY offer detection, not buy-box dominance
+
+**New Filter Logic:**
+```python
+# Amazon exclusion
+confirmed_amazon_seller = (
+    request.skip_amazon_seller
+    and seller_info.get("data_status") == "observed"
+    and seller_info.get("amazon_seller") is True
+)
+
+# Brand exclusion
+confirmed_brand_owner = (
+    request.skip_brand_seller
+    and seller_info.get("data_status") == "observed"
+    and seller_info.get("brand_is_seller") is True
+)
+
+# Fail-closed: exclude if data unavailable under strict filtering
+if request.skip_amazon_seller or request.skip_brand_seller:
+    if seller_info.get("data_status") in ("unavailable", "blocked"):
+        confirmed_seller_conflict = True
+        verdict_reasons.append("seller_data_unavailable_under_strict_filtering")
+```
+
+#### 5. Pipeline Updates (`web_app/backend/services/search_pipeline.py`)
+
+**Changes:**
+- `_enrich_seller_info()` passes `brand` to `provider.get_sellers()`
+- Always enriches seller data (removed filter-conditional logic)
+- Logs `brand_is_seller` alongside `amazon_seller`
+- Preserves `data_status` from provider
+
+#### 6. Frontend UI Updates (`web_app/frontend/src/components/ResultsTable.jsx`)
+
+**Changes:**
+- Added `brand_is_seller` badge (purple "BRD" indicator)
+- Enhanced seller column to show data quality states:
+  - ✓ `observed` → Shows seller count + badges
+  - ⚠ `unavailable` → Shows "⚠ N/A"
+  - ⚠ `blocked` → Shows "⚠ Blocked"
+- Improved Amazon badge styling (orange ring with background)
+
+**UI Example:**
+```
+Sellers Column:
+6 [AMZ] [BRD]      ← Amazon + Brand detected
+4 [AMZ]            ← Amazon only
+8 [BRD]            ← Brand only
+5                  ← Clean (neither)
+⚠ N/A              ← Data unavailable
+⚠ Blocked          ← Scraping blocked
+```
+
+#### 7. Regression Tests (`tests/test_winning_product_filter.py`)
+
+**Added 9 new tests:**
+- `test_amazon_in_buybox_only_excludes_when_skip_amazon_seller`
+- `test_amazon_in_other_offers_not_buybox_excludes_when_skip_amazon_seller` ← Critical
+- `test_brand_in_buybox_only_excludes_when_skip_brand_seller`
+- `test_brand_in_other_offers_not_buybox_excludes_when_skip_brand_seller` ← Critical
+- `test_seller_data_unavailable_with_strict_filters_excludes` ← Fail-closed
+- `test_seller_data_blocked_with_strict_filters_excludes` ← Fail-closed
+- `test_no_amazon_no_brand_passes_strict_filters`
+- `test_both_amazon_and_brand_present_double_conflict`
+
+#### 8. Test Updates
+
+**Changed Files:**
+- `tests/test_search_pipeline.py` - All FakeProvider.get_sellers() accept brand= kwarg, brand_is_seller added
+- `tests/test_sales_estimator.py` - Updated expected values for 2026 curves
+- `pytest.ini` - Added asyncio markers + asyncio_mode=auto
+
+**Files Modified (1,348 lines total):**
+- `src/analysis/seller_analysis.py` (1,166 lines changed - full rewrite)
+- `src/analytics/winning_product_filter.py` (48 lines)
+- `src/providers/amazon_html_provider.py` (9 lines)
+- `src/scraper/amazon_scraper.py` (79 lines)
+- `web_app/backend/services/search_pipeline.py` (37 lines)
+- `tests/test_search_pipeline.py` (6 lines)
+- `tests/test_sales_estimator.py` (10 lines)
+- `tests/test_winning_product_filter.py` (150+ lines new tests)
+- `pytest.ini` (2 lines)
+- `web_app/frontend/src/components/ResultsTable.jsx` (UI improvements)
+
+**Commits:**
+- `ef6e382` - Fix test suite after sales estimator recalibration
+- `05f67b4` - Fix seller detection: scan ALL offers for Amazon and brand
+
+**Behavior Changes:**
+
+| Scenario | Old Behavior | New Behavior |
+|----------|-------------|--------------|
+| Amazon in offer #2-4 only | ✓ Passed filter | ✗ Excluded |
+| Brand in offer #2-4 only | ✓ Passed filter | ✗ Excluded |
+| Seller data unavailable + strict filters | ✓ Passed (fail-open) | ✗ Excluded (fail-closed) |
+| Seller data blocked + strict filters | ✓ Passed (fail-open) | ✗ Excluded (fail-closed) |
+| Amazon in buy-box only | ✗ Excluded | ✗ Excluded (unchanged) |
+| Brand in buy-box only | ✗ Excluded | ✗ Excluded (unchanged) |
+
+**Performance Considerations:**
+- AOD endpoint adds 1-2 seconds per product
+- Significantly more accurate than buy-box-only check
+- Marketplace-aware URLs prevent false negatives on UK/DE/etc
+- Fail-closed policy prevents false positives when data unavailable
+
+**Verification:**
+```powershell
+# Run all tests including new seller filtering regression tests
+pytest tests/test_winning_product_filter.py -v -k seller
+
+# Run full test suite
+pytest tests/ -v
+```
+
+**User-Facing Changes:**
+1. "Skip Amazon as Seller" now actually works - excludes if Amazon in ANY offer
+2. "Skip Brand as Seller" now actually works - excludes if brand in ANY offer
+3. Seller column shows data quality (verified/unavailable/blocked)
+4. Brand detection works reliably (improved extraction + matching)
+5. No more silent failures - unavailable data excludes products under strict filtering
 
 ---
