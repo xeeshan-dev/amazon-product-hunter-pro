@@ -147,8 +147,11 @@ The current synchronous request path is organized into explicit stages:
 4. Apply existing brand and hazmat risk checks.
 5. Calculate current fee/profit/revenue fields.
 6. Apply margin and sales filters.
-7. Enrich seller data only when seller filters require it.
-8. Apply seller filters.
+7. Enrich seller data for each candidate through AOD/offer-listing scraping.
+8. Apply seller filters with strict seller-conflict rules:
+   - exclude when Amazon appears in any offer and `skip_amazon_seller=true`
+   - exclude when brand appears in any offer and `skip_brand_seller=true`
+   - fail closed when seller data is unavailable under strict seller filters
 9. Build summary, market share, sorting, and the existing response schema.
 10. Persist each response-visible result in the canonical search, product, and
     snapshot tables before returning the response.

@@ -209,6 +209,7 @@ def test_seller_data_unavailable_is_not_scored_against_candidate():
 
     assert result["factors"]["seller_position"]["available"] is False
     assert "seller_data_unavailable" in result["review_flags"]
+    assert result["strict_seller_filter_unverified"] is False
 
 
 def test_amazon_seller_without_skip_filter_is_heavy_penalty_not_conflict():
@@ -231,6 +232,45 @@ def test_amazon_seller_without_skip_filter_is_heavy_penalty_not_conflict():
     # relative to a clean listing (95) but must still be a notable penalty.
     assert result["factors"]["seller_position"]["score"] <= 70
     assert result["factors"]["seller_position"]["score"] > 0
+
+
+def test_strict_seller_filters_fail_closed_when_seller_data_unavailable():
+    product = healthy_product(
+        seller_info={
+            "data_status": "blocked",
+            "amazon_seller": False,
+            "brand_is_seller": False,
+            "total_sellers": 0,
+        },
+    )
+
+    result = WinningProductFilter().evaluate(
+        product,
+        make_request(skip_amazon_seller=True, skip_brand_seller=True),
+    )
+
+    assert result["strict_seller_filter_unverified"] is True
+    assert result["confirmed_seller_conflict"] is True
+    assert "seller_data_unverified_for_strict_filters" in result["review_flags"]
+    assert result["decision"] == DEPRIORITIZE_VERDICT
+
+
+def test_brand_seller_flag_from_any_offer_is_hard_conflict_in_strict_mode():
+    product = healthy_product(
+        seller_info={
+            "data_status": "observed",
+            "amazon_seller": False,
+            "brand_is_seller": True,
+            "total_sellers": 4,
+            "seller_name": "Independent Seller",
+        },
+    )
+    result = WinningProductFilter().evaluate(
+        product,
+        make_request(skip_brand_seller=True),
+    )
+    assert result["confirmed_brand_owner"] is True
+    assert result["confirmed_seller_conflict"] is True
 
 
 def test_strict_match_semantics_unchanged():
@@ -336,9 +376,10 @@ class _Provider:
             }
         ]
 
-    async def get_sellers(self, asin):
+    async def get_sellers(self, asin, brand=""):
         return {
             "amazon_seller": False,
+            "brand_is_seller": False,
             "total_sellers": 2,
             "seller_name": "Independent Seller",
             "data_status": "observed",

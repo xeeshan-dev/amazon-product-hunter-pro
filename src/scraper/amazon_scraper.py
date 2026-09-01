@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from typing import Dict, List, Optional
 import logging
 from urllib.parse import urlencode
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -352,6 +353,8 @@ class AmazonScraper:
                 session=self.session,
                 referer=referer_url,
                 brand=brand,
+                base_url=self.base_url,
+                fetch_response=self._fetch_seller_response,
             )
 
             return {
@@ -362,6 +365,7 @@ class AmazonScraper:
                 "total_sellers": info.total_sellers,
                 "seller_name": info.buy_box_seller_name,
                 "prices": info.prices,
+                "data_status": info.data_status,
             }
 
         except Exception as e:
@@ -375,7 +379,25 @@ class AmazonScraper:
             "total_sellers": 0,
             "prices": {"fba": [], "fbm": []},
             "seller_name": None,
+            "data_status": "unavailable",
         }
+
+    def _fetch_seller_response(self, url: str, req_headers: Dict, referer: str, timeout: int):
+        if self._using_smart_fetcher:
+            result = self.fetcher.get(url, referer=referer, extra_headers=req_headers)
+            if hasattr(self.fetcher, "http_fetcher"):
+                self.session = self.fetcher.http_fetcher.session
+            return result.response if result else None
+
+        response = self.fetcher.get(
+            url,
+            referer=referer,
+            extra_headers=req_headers,
+            allow_small_response=True,
+            timeout=timeout,
+        )
+        self.session = self.fetcher.session
+        return response
             
     def _extract_search_item_data(self, item) -> Optional[Dict]:
         try:
@@ -471,6 +493,7 @@ class AmazonScraper:
             product = {
                 'asin': asin,
                 'title': title,
+                'brand': self._extract_brand_from_title(title),
                 'price': price,
                 'rating': rating,
                 'reviews': reviews,
@@ -483,19 +506,50 @@ class AmazonScraper:
         except Exception as e:
             logger.warning(f"Error extracting search item data: {str(e)}")
             return None
+
+    @staticmethod
+    def _extract_brand_from_title(title: str) -> str:
+        if not title:
+            return ""
+        cleaned = re.sub(r"[^\w\s&-]", " ", title).strip()
+        if not cleaned:
+            return ""
+        words = [w for w in cleaned.split() if w]
+        if not words:
+            return ""
+        stop_words = {"for", "with", "by", "and", "or", "the", "a", "an", "of", "to", "in"}
+        brand_words = []
+        for word in words[:3]:
+            lower = word.lower()
+            if lower in stop_words:
+                break
+            if len(lower) <= 1:
+                break
+            brand_words.append(word)
+        return " ".join(brand_words).strip()
     
     def _extract_product_details(self, soup, asin: str) -> Dict:
         referer_url = f"{self.base_url}/dp/{asin}"
+        product_title = ""
+        title_elem = soup.find("span", {"id": "productTitle"})
+        if title_elem:
+            product_title = title_elem.get_text(" ", strip=True)
+        product_brand = self._extract_brand_from_product_page(soup, product_title)
         seller_info = self.seller_analyzer.analyze_sellers(
             soup,
             asin=asin,
             headers=self._get_headers(),
             session=self.session,
-            referer=referer_url
+            referer=referer_url,
+            brand=product_brand,
+            base_url=self.base_url,
+            fetch_response=self._fetch_seller_response,
         )
         
         details = {
             'asin': asin,
+            'title': product_title,
+            'brand': product_brand,
             'bsr': self._extract_bsr(soup),
             'description': self._extract_description(soup),
             'features': self._extract_features(soup),
@@ -508,10 +562,24 @@ class AmazonScraper:
                 'prices': {
                     'fba': seller_info.prices.get('fba', []) if hasattr(seller_info, 'prices') else [],
                     'fbm': seller_info.prices.get('fbm', []) if hasattr(seller_info, 'prices') else []
-                }
+                },
+                'brand_is_seller': seller_info.brand_is_seller if hasattr(seller_info, 'brand_is_seller') else False,
+                'data_status': seller_info.data_status if hasattr(seller_info, 'data_status') else "unavailable",
             }
         }
         return details
+
+    def _extract_brand_from_product_page(self, soup, title: str = "") -> str:
+        if soup is None:
+            return self._extract_brand_from_title(title)
+        byline = soup.find("a", {"id": "bylineInfo"}) or soup.find("span", {"id": "bylineInfo"})
+        if byline:
+            text = byline.get_text(" ", strip=True)
+            text = re.sub(r"^(visit the|brand:)\s+", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s+store$", "", text, flags=re.IGNORECASE).strip()
+            if text:
+                return text
+        return self._extract_brand_from_title(title)
 
     def _extract_price(self, elem) -> float:
         """Extract price - simplified and accurate."""

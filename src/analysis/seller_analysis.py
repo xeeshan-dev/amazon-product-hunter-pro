@@ -25,6 +25,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +96,28 @@ def _brand_owns_listing(seller_name: str, brand: str) -> bool:
     """
     if not seller_name or not brand:
         return False
-    sn = seller_name.strip().lower()
-    br = brand.strip().lower()
+    sn = _normalize_entity_name(seller_name)
+    br = _normalize_entity_name(brand)
     if len(br) < 3:          # Too short to be meaningful ("ac", "bb"…)
         return False
+    if sn == br:
+        return True
+    if len(br) <= 4 and len(sn) > len(br):
+        return bool(re.search(rf"\b{re.escape(br)}\b", sn))
     return br in sn or sn in br
+
+
+def _normalize_entity_name(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    normalized = re.sub(r"[^\w\s&.-]+", " ", normalized)
+    normalized = re.sub(
+        r"\b(official|store|shop|direct|llc|inc|corp|ltd|co|company|usa|us)\b",
+        " ",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +155,7 @@ class SellerInfo:
 
     # All parsed offers (for debugging / frontend display)
     offers: List[SellerOffer] = field(default_factory=list)
+    data_status: str = SELLER_DATA_STATUS_UNAVAILABLE
 
     # Legacy compat
     prices: Dict = field(default_factory=lambda: {"fba": [], "fbm": [], "amazon": None})
@@ -168,6 +187,8 @@ class SellerAnalyzer:
         session=None,
         referer: str = None,
         brand: str = "",  # Product brand — used for brand-is-seller detection
+        base_url: str = "https://www.amazon.com",
+        fetch_response=None,
     ) -> SellerInfo:
 
         info = SellerInfo()
@@ -175,7 +196,14 @@ class SellerAnalyzer:
             return info
 
         # ---- Step 1: fetch the full offer list --------------------------------
-        offers_html = self._fetch_offers_html(asin, headers, session, referer)
+        offers_html, fetch_status = self._fetch_offers_html(
+            asin,
+            headers,
+            session,
+            referer,
+            base_url=base_url,
+            fetch_response=fetch_response,
+        )
 
         if offers_html:
             offers = self._parse_offers(offers_html)
@@ -226,11 +254,18 @@ class SellerAnalyzer:
             "fbm": [o.price for o in offers if o.fulfillment == "FBM" and o.price],
             "amazon": next((o.price for o in offers if o.is_amazon and o.price), None),
         }
+        if info.total_sellers > 0 or info.amazon_seller or info.brand_is_seller:
+            info.data_status = SELLER_DATA_STATUS_OBSERVED
+        elif offers_html:
+            info.data_status = SELLER_DATA_STATUS_PARSE_FAILED
+        else:
+            info.data_status = fetch_status
 
         logger.info(
-            "[%s] Seller summary: total=%d fba=%d fbm=%d amazon=%s brand_seller=%s buy_box='%s'",
+            "[%s] Seller summary: total=%d fba=%d fbm=%d amazon=%s brand_seller=%s buy_box='%s' status=%s",
             asin, info.total_sellers, info.fba_count, info.fbm_count,
             info.amazon_seller, info.brand_is_seller, info.buy_box_seller_name,
+            info.data_status,
         )
         return info
 
@@ -244,37 +279,56 @@ class SellerAnalyzer:
         headers: Optional[dict],
         session,
         referer: Optional[str],
-    ) -> Optional[str]:
-        """Try AOD AJAX → offer-listing page. Returns raw HTML or None."""
-        if not session:
-            return None
+        *,
+        base_url: str,
+        fetch_response=None,
+    ) -> tuple[Optional[str], str]:
+        """Try AOD AJAX → offer-listing page. Returns (raw_html, data_status)."""
+        if not session and fetch_response is None:
+            return None, SELLER_DATA_STATUS_UNAVAILABLE
+
+        domain = self._resolve_marketplace_domain(base_url)
+        root_url = f"https://{domain}"
 
         req_headers = dict(headers or {})
         req_headers.update({
             "Accept": "text/html,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate",
-            "Referer": referer or f"https://www.amazon.com/dp/{asin}",
+            "Referer": referer or f"{root_url}/dp/{asin}",
             "X-Requested-With": "XMLHttpRequest",
             "Cache-Control": "no-cache",
         })
 
         # Set locale cookies so offers render correctly
         try:
-            session.cookies.set("i18n-prefs", "USD", domain=".amazon.com")
-            session.cookies.set("lc-main", "en_US", domain=".amazon.com")
+            session.cookies.set("i18n-prefs", self._marketplace_currency(domain), domain=f".{domain}")
+            session.cookies.set("lc-main", self._marketplace_locale(domain), domain=f".{domain}")
         except Exception:
             pass
 
         # AOD AJAX endpoints — try in order
         aod_urls = [
-            f"https://www.amazon.com/gp/aod/ajax/ref=dp_aod_NEW_mbc?asin={asin}",
-            f"https://www.amazon.com/gp/aod/ajax?asin={asin}",
-            f"https://www.amazon.com/gp/aod/ajax/ref=dp_aod_all?asin={asin}",
+            f"{root_url}/gp/aod/ajax/ref=dp_aod_NEW_mbc?asin={asin}",
+            f"{root_url}/gp/aod/ajax?asin={asin}",
+            f"{root_url}/gp/aod/ajax/ref=dp_aod_all?asin={asin}",
         ]
+        blocked_detected = False
         for url in aod_urls:
             try:
-                resp = session.get(url, headers=req_headers, timeout=12)
+                resp = self._fetch_response(
+                    url=url,
+                    req_headers=req_headers,
+                    referer=referer or f"{root_url}/dp/{asin}",
+                    timeout=12,
+                    session=session,
+                    fetch_response=fetch_response,
+                )
+                if not resp:
+                    continue
+                if resp.status_code in (202, 403, 429, 503) or self._looks_like_block_page(resp.text):
+                    blocked_detected = True
+                    continue
                 if resp.status_code == 200 and resp.text and len(resp.text) > 500:
                     # Confirm it's an offers page, not a bot-check
                     if any(kw in resp.text for kw in (
@@ -282,21 +336,81 @@ class SellerAnalyzer:
                         "sold-by", "soldBy", "seller-name",
                     )):
                         logger.debug("[%s] AOD fetched from %s (%d chars)", asin, url, len(resp.text))
-                        return resp.text
+                        return resp.text, SELLER_DATA_STATUS_OBSERVED
             except Exception as exc:
                 logger.debug("[%s] AOD fetch failed (%s): %s", asin, url, exc)
 
         # Fallback: full offer-listing page
         try:
-            ol_url = f"https://www.amazon.com/gp/offer-listing/{asin}/ref=olp_prime_all"
-            resp = session.get(ol_url, headers=req_headers, timeout=14)
-            if resp.status_code == 200 and resp.text and len(resp.text) > 500:
+            ol_url = f"{root_url}/gp/offer-listing/{asin}/ref=olp_prime_all"
+            resp = self._fetch_response(
+                url=ol_url,
+                req_headers=req_headers,
+                referer=referer or f"{root_url}/dp/{asin}",
+                timeout=14,
+                session=session,
+                fetch_response=fetch_response,
+            )
+            if resp and (
+                resp.status_code in (202, 403, 429, 503)
+                or self._looks_like_block_page(resp.text)
+            ):
+                blocked_detected = True
+            if resp and resp.status_code == 200 and resp.text and len(resp.text) > 500:
                 logger.debug("[%s] Offer-listing page fetched (%d chars)", asin, len(resp.text))
-                return resp.text
+                return resp.text, SELLER_DATA_STATUS_OBSERVED
         except Exception as exc:
             logger.debug("[%s] Offer-listing fallback failed: %s", asin, exc)
 
-        return None
+        if blocked_detected:
+            return None, SELLER_DATA_STATUS_BLOCKED
+        return None, SELLER_DATA_STATUS_UNAVAILABLE
+
+    @staticmethod
+    def _resolve_marketplace_domain(base_url: str) -> str:
+        domain = urlparse(base_url or "").netloc
+        return domain or "www.amazon.com"
+
+    @staticmethod
+    def _marketplace_currency(domain: str) -> str:
+        if domain.endswith("amazon.co.uk"):
+            return "GBP"
+        if domain.endswith("amazon.de"):
+            return "EUR"
+        return "USD"
+
+    @staticmethod
+    def _marketplace_locale(domain: str) -> str:
+        if domain.endswith("amazon.co.uk"):
+            return "en_GB"
+        if domain.endswith("amazon.de"):
+            return "de_DE"
+        return "en_US"
+
+    @staticmethod
+    def _fetch_response(
+        *,
+        url: str,
+        req_headers: Dict[str, str],
+        referer: str,
+        timeout: int,
+        session,
+        fetch_response=None,
+    ):
+        if fetch_response is not None:
+            return fetch_response(url, req_headers, referer, timeout)
+        return session.get(url, headers=req_headers, timeout=timeout)
+
+    @staticmethod
+    def _looks_like_block_page(text: str) -> bool:
+        lower = (text or "").lower()
+        block_markers = (
+            "robot check",
+            "enter the characters",
+            "validatecaptcha",
+            "automated access to amazon data",
+        )
+        return any(marker in lower for marker in block_markers)
 
     # ------------------------------------------------------------------
     # Parsing
@@ -405,7 +519,8 @@ class SellerAnalyzer:
             is_amazon=is_amazon,
             fulfillment="FBA" if is_amazon else "FBM",
         )
-        offers.append(offer)
+        if offer.seller_name or offer.is_amazon:
+            offers.append(offer)
         return offers
 
     def _read_buy_box(self, soup) -> tuple[bool, Optional[str]]:
@@ -489,3 +604,7 @@ def _parse_price(text: str) -> Optional[float]:
         except ValueError:
             pass
     return None
+SELLER_DATA_STATUS_OBSERVED = "observed"
+SELLER_DATA_STATUS_UNAVAILABLE = "unavailable"
+SELLER_DATA_STATUS_BLOCKED = "blocked"
+SELLER_DATA_STATUS_PARSE_FAILED = "parse_failed"

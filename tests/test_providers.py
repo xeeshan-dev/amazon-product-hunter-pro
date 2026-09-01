@@ -25,14 +25,16 @@ class FakeScraper:
     def get_product_details(self, asin):
         return {"asin": asin, "title": "Detail Product", "price": "24.50"}
 
-    def get_seller_summary(self, asin):
+    def get_seller_summary(self, asin, brand=""):
         return {
             "fba_count": "2",
             "fbm_count": "1",
             "amazon_seller": False,
+            "brand_is_seller": False,
             "total_sellers": "3",
             "prices": {"fba": [19.99], "fbm": [18.99]},
             "seller_name": "Example Seller",
+            "data_status": "observed",
         }
 
 
@@ -72,7 +74,9 @@ async def test_amazon_html_provider_normalizes_seller_summary():
         "fba_count": 2,
         "fbm_count": 1,
         "amazon_seller": False,
+        "brand_is_seller": False,
         "total_sellers": 3,
         "prices": {"fba": [19.99], "fbm": [18.99]},
         "seller_name": "Example Seller",
+        "data_status": "observed",
     }

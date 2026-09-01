@@ -21,9 +21,11 @@ class AmazonHTMLProvider(ProductDataProvider):
         "fba_count": 0,
         "fbm_count": 0,
         "amazon_seller": False,
+        "brand_is_seller": False,
         "total_sellers": 0,
         "prices": {"fba": [], "fbm": []},
         "seller_name": None,
+        "data_status": "unavailable",
     }
 
     def __init__(
@@ -109,7 +111,13 @@ class AmazonHTMLProvider(ProductDataProvider):
                 "fbm": list(prices.get("fbm") or []),
             },
             "seller_name": self._string_or_none(seller.get("seller_name")),
+            "data_status": self._seller_data_status(seller.get("data_status")),
         }
+
+    @staticmethod
+    def _seller_data_status(value: Any) -> str:
+        allowed = {"observed", "unavailable", "blocked", "parse_failed"}
+        return value if value in allowed else "unavailable"
 
     @staticmethod
     def _string_or_none(value: Any) -> Optional[str]:

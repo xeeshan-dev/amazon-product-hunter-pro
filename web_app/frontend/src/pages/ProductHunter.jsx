@@ -236,13 +236,13 @@ function ProductHunter() {
         // Strict filters were already evaluated by the backend. Do not hide its review fallback.
         if (data.summary.filter_mode !== 'review_fallback' && p.margin < minMargin) return false
 
+        const sellerStatus = p.seller_info?.data_status || 'unavailable'
+        const sellerObserved = sellerStatus === 'observed'
+        if ((skipAmazonSeller || skipBrandSeller) && !sellerObserved) return false
+
         if (skipAmazonSeller && p.seller_info?.amazon_seller) return false
 
-        if (skipBrandSeller && p.seller_info?.seller_name && p.brand) {
-            const sellerLower = p.seller_info.seller_name.toLowerCase()
-            const brandLower = p.brand.toLowerCase()
-            if (sellerLower.includes(brandLower) || brandLower.includes(sellerLower)) return false
-        }
+        if (skipBrandSeller && p.seller_info?.brand_is_seller) return false
 
         const sales = p.estimated_sales || 0
         if (data.summary.filter_mode !== 'review_fallback' && (sales < minSales || sales > maxSales)) return false
@@ -1159,6 +1159,9 @@ function ProductHunter() {
                                 {(() => {
                                     const visible = sortProducts(filterVisibleProducts(data.results))
                                     const winners = data.summary.verdicts?.['Strong research candidate'] || 0
+                                    const sellerUnverified = data.results.filter(
+                                        p => (p.seller_info?.data_status || 'unavailable') !== 'observed'
+                                    ).length
                                     return (
                                         <>
                                             <div className="flex flex-wrap items-center justify-between gap-2 px-1">
@@ -1170,6 +1173,11 @@ function ProductHunter() {
                                                     </span>
                                                     {data.summary.filter_mode === 'review_fallback' && (
                                                         <span className="mt-1 block text-xs text-amber-300">No products met every preference. Showing valid candidates for additional validation.</span>
+                                                    )}
+                                                    {sellerUnverified > 0 && (
+                                                        <span className="mt-1 block text-xs text-amber-300">
+                                                            Seller data unavailable for {sellerUnverified} product{sellerUnverified === 1 ? '' : 's'}.
+                                                        </span>
                                                     )}
                                                 </div>
                                                 <div className="flex flex-wrap items-center gap-2">

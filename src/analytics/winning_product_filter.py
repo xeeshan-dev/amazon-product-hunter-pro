@@ -7,8 +7,9 @@ The filter answers one question per candidate:
 Core philosophy (mirrors manual FBA product hunting):
   1. Brand-not-selling:  The product brand should NOT be the active seller.
      If Adidas makes the product, Adidas should not be selling it on Amazon.
-  2. Amazon-not-dominant: Amazon can exist as a seller but must NOT have
-     market dominance (>= amazon_dominance_threshold of the buy-box / offers).
+  2. Amazon seller policy: when skip_amazon_seller is enabled, any Amazon
+     presence in offers is a hard exclude; otherwise Amazon dominance is a
+     strong negative signal.
   3. Healthy demand: BSR-derived sales must be high enough to be worth sourcing.
   4. Profitable margin: After FBA fees the margin must support a real business.
   5. Manageable competition: Not price-war territory (>25 FBA sellers).
@@ -21,6 +22,7 @@ so missing data penalises by reducing confidence, not by tanking the score.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 try:
@@ -106,6 +108,7 @@ class WinningProductFilter:
         confidence = float(raw_confidence) if raw_confidence is not None else 0.5
         seller = product.get("seller_info") or {}
         risks = product.get("risks") or {}
+        seller_data_status = (seller.get("data_status") or "unavailable").strip().lower()
 
         # ---- Brand-owns-listing detection ---------------------------------
         # Primary signal: SellerAnalyzer checked EVERY offer against the brand
@@ -113,11 +116,9 @@ class WinningProductFilter:
         seller_brand_is_seller = bool(seller.get("brand_is_seller", False))
 
         # Secondary signal: name-match on buy-box seller vs product brand field
-        brand = (product.get("brand") or "").strip().lower()
-        seller_name = (seller.get("seller_name") or "").strip().lower()
-        name_match = bool(
-            brand and seller_name and (brand in seller_name or seller_name in brand)
-        )
+        brand = self._normalize_entity_name(product.get("brand"))
+        seller_name = self._normalize_entity_name(seller.get("seller_name"))
+        name_match = self._brand_seller_match(brand, seller_name)
         # Title storefront signal ("Visit the Adidas Store", "by Adidas")
         title_lower = (product.get("title") or "").lower()
         brand_storefront_signal = bool(
@@ -148,9 +149,14 @@ class WinningProductFilter:
         # ---- Confirmed conflict (hard exclude) ----------------------------
         # skip_amazon_seller: exclude if Amazon is ANY seller (not just dominant)
         # skip_brand_seller: exclude if brand owns ANY offer
+        strict_seller_filter_unverified = bool(
+            (request.skip_amazon_seller or request.skip_brand_seller)
+            and seller_data_status != "observed"
+        )
         confirmed_conflict = (
             (request.skip_amazon_seller and confirmed_amazon_seller)
             or (request.skip_brand_seller and confirmed_brand_owner)
+            or strict_seller_filter_unverified
         )
 
         # ---- Strict match (meets every preference numerically) ------------
@@ -192,8 +198,10 @@ class WinningProductFilter:
             review_flags.append(RISK_FLAG_BRAND)
         if risks.get("hazmat"):
             review_flags.append(RISK_FLAG_HAZMAT)
-        if seller.get("data_status") != "observed":
+        if seller_data_status != "observed":
             review_flags.append("seller_data_unavailable")
+            if strict_seller_filter_unverified:
+                review_flags.append("seller_data_unverified_for_strict_filters")
         elif (seller.get("total_sellers") or 0) > MAX_FBA_SELLERS:
             review_flags.append("high_seller_count")
         if confirmed_brand_owner:
@@ -286,6 +294,7 @@ class WinningProductFilter:
             "verdict": verdict,
             "strict_match": strict_match,
             "confirmed_seller_conflict": confirmed_conflict,
+            "strict_seller_filter_unverified": strict_seller_filter_unverified,
             "confirmed_major_risk": confirmed_major_risk,
             "confirmed_brand_owner": confirmed_brand_owner,
             "amazon_dominant": amazon_dominant,
@@ -567,3 +576,29 @@ class WinningProductFilter:
             return float(value or 0)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _normalize_entity_name(value: Any) -> str:
+        text = (str(value or "")).strip().lower()
+        text = "".join(ch if (ch.isalnum() or ch.isspace() or ch in {"&", "-", "."}) else " " for ch in text)
+        text = re.sub(
+            r"\b(official|store|shop|direct|llc|inc|corp|ltd|co|company|usa|us)\b",
+            " ",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return " ".join(text.split())
+
+    @classmethod
+    def _brand_seller_match(cls, brand: str, seller_name: str) -> bool:
+        brand = cls._normalize_entity_name(brand)
+        seller_name = cls._normalize_entity_name(seller_name)
+        if not brand or not seller_name:
+            return False
+        if len(brand) < 3:
+            return False
+        if brand == seller_name:
+            return True
+        if len(brand) <= 4 and len(seller_name) > len(brand):
+            return f" {brand} " in f" {seller_name} "
+        return brand in seller_name or seller_name in brand

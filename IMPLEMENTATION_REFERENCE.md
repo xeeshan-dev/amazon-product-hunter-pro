@@ -755,6 +755,14 @@ DEFAULT_CURVE = (40000, 0.4)
 Search Request ? Provider (scraper) ? Scoring/Risk ? Seller Enrichment (ALL products) ? Filtering ? Response
 ```
 
+**Seller data status semantics (current):**
+- `observed`: offer data parsed successfully
+- `blocked`: Amazon challenge/interstitial blocked offer scraping
+- `parse_failed`: offer page fetched but seller rows could not be parsed
+- `unavailable`: no usable offer response returned
+
+When `skip_amazon_seller=true` or `skip_brand_seller=true`, seller filtering is now fail-closed: products with non-`observed` seller data are excluded instead of silently treated as safe.
+
 **Sales Estimation Method:**
 - Method: `bsr_log_curve_v2` (updated)
 - Confidence: 0.50-0.75 depending on BSR range and category match

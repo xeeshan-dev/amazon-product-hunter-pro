@@ -46,6 +46,7 @@ class FakeProvider:
             "prices": {"fba": [], "fbm": []},
             "fba_count": 1,
             "fbm_count": 1,
+            "data_status": "observed",
         }
 
 
@@ -181,12 +182,55 @@ async def test_search_pipeline_excludes_confirmed_amazon_seller_when_requested()
                 "brand_is_seller": False,
                 "total_sellers": 2,
                 "seller_name": "Amazon.com",
+                "data_status": "observed",
             }
 
     pipeline = make_pipeline()
     pipeline.provider_factory = AmazonSellerProvider
 
     response = await pipeline.run(make_request(skip_amazon_seller=True))
+
+    assert response["summary"]["total_products"] == 0
+
+
+@pytest.mark.asyncio
+async def test_search_pipeline_excludes_confirmed_brand_seller_when_requested():
+    class BrandSellerProvider(FakeProvider):
+        async def get_sellers(self, asin, brand=""):
+            return {
+                "amazon_seller": False,
+                "brand_is_seller": True,
+                "total_sellers": 4,
+                "seller_name": "Independent Seller",
+                "data_status": "observed",
+            }
+
+    pipeline = make_pipeline()
+    pipeline.provider_factory = BrandSellerProvider
+
+    response = await pipeline.run(make_request(skip_brand_seller=True))
+
+    assert response["summary"]["total_products"] == 0
+
+
+@pytest.mark.asyncio
+async def test_search_pipeline_excludes_unverified_seller_data_in_strict_mode():
+    class UnavailableSellerProvider(FakeProvider):
+        async def get_sellers(self, asin, brand=""):
+            return {
+                "amazon_seller": False,
+                "brand_is_seller": False,
+                "total_sellers": 0,
+                "seller_name": None,
+                "data_status": "blocked",
+            }
+
+    pipeline = make_pipeline()
+    pipeline.provider_factory = UnavailableSellerProvider
+
+    response = await pipeline.run(
+        make_request(skip_amazon_seller=True, skip_brand_seller=True)
+    )
 
     assert response["summary"]["total_products"] == 0
 

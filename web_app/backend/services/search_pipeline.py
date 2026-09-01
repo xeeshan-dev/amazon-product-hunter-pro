@@ -8,7 +8,7 @@ Stages (in order for each candidate):
   5. Opportunity scoring (EnhancedOpportunityScorer)
   6. Risk analysis (brand / hazmat)
   7. Hard major-risk exclude (only when confirmed + filter active)
-  8. Seller enrichment (AOD fetch — only when seller filters requested)
+  8. Seller enrichment (AOD/offer-listing fetch for every candidate)
   9. Brand-owner & Amazon-dominance detection (inside WinningProductFilter)
  10. Seller-conflict exclude (brand-owns-listing / Amazon confirmed seller)
  11. Qualification via WinningProductFilter (composite score + verdict)
@@ -261,7 +261,13 @@ class SearchPipeline:
         try:
             brand = (product.get("brand") or "").strip()
             seller_summary = await provider.get_sellers(asin, brand=brand)
-            seller_summary["data_status"] = "observed"
+            if seller_summary.get("data_status") not in {
+                "observed",
+                "unavailable",
+                "blocked",
+                "parse_failed",
+            }:
+                seller_summary["data_status"] = "unavailable"
             product["seller_info"] = seller_summary
 
             logger.info(
@@ -284,7 +290,7 @@ class SearchPipeline:
                 "brand_is_seller": False,
                 "total_sellers": None,
                 "seller_name": None,
-                "data_status": "unavailable",
+                "data_status": "parse_failed",
             }
 
     def _observation_history(self, product, marketplace, db):
