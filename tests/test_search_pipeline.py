@@ -37,9 +37,10 @@ class FakeProvider:
             },
         ]
 
-    async def get_sellers(self, asin):
+    async def get_sellers(self, asin, brand=""):
         return {
             "amazon_seller": False,
+            "brand_is_seller": False,
             "total_sellers": 2,
             "seller_name": "Independent Seller",
             "prices": {"fba": [], "fbm": []},
@@ -174,9 +175,10 @@ async def test_search_pipeline_keeps_keyword_risk_flags_for_manual_validation():
 @pytest.mark.asyncio
 async def test_search_pipeline_excludes_confirmed_amazon_seller_when_requested():
     class AmazonSellerProvider(FakeProvider):
-        async def get_sellers(self, asin):
+        async def get_sellers(self, asin, brand=""):
             return {
                 "amazon_seller": True,
+                "brand_is_seller": False,
                 "total_sellers": 2,
                 "seller_name": "Amazon.com",
             }

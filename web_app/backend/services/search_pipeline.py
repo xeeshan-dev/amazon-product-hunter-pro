@@ -239,11 +239,17 @@ class SearchPipeline:
         request,
         provider,
     ) -> None:
-        """Fetch seller / AOD data for all products - critical for decision making."""
+        """Fetch AOD seller data for every product.
+
+        Passes the product brand so SellerAnalyzer can flag brand_is_seller
+        at the offer level — catching cases where the brand appears as any
+        offer, not just the buy-box.
+        """
         asin = product.get("asin")
         if not asin:
             product["seller_info"] = {
                 "amazon_seller": False,
+                "brand_is_seller": False,
                 "total_sellers": None,
                 "fba_count": 0,
                 "fbm_count": 0,
@@ -253,30 +259,20 @@ class SearchPipeline:
             return
 
         try:
-            seller_summary = await provider.get_sellers(asin)
+            brand = (product.get("brand") or "").strip()
+            seller_summary = await provider.get_sellers(asin, brand=brand)
             seller_summary["data_status"] = "observed"
             product["seller_info"] = seller_summary
-            
-            # Log seller data for visibility
+
             logger.info(
-                f"[{asin}] Seller data: FBA={seller_summary.get('fba_count', 0)}, "
-                f"FBM={seller_summary.get('fbm_count', 0)}, "
-                f"Amazon={seller_summary.get('amazon_seller', False)}, "
-                f"Seller={seller_summary.get('seller_name', 'Unknown')}"
-            )
-
-            # Resolve brand: prefer the field, then scrape-level extraction.
-            # Do NOT fall back to the first word of the title — that is too
-            # unreliable and causes false brand-owner detections.
-            brand = (product.get("brand") or "").strip()
-            product["brand"] = brand
-
-            logger.debug(
-                "[%s] seller='%s' brand='%s' amazon=%s",
+                "[%s] Sellers: total=%s fba=%s fbm=%s amazon=%s brand_seller=%s buy_box='%s'",
                 asin,
+                seller_summary.get("total_sellers"),
+                seller_summary.get("fba_count", 0),
+                seller_summary.get("fbm_count", 0),
+                seller_summary.get("amazon_seller", False),
+                seller_summary.get("brand_is_seller", False),
                 seller_summary.get("seller_name"),
-                brand,
-                seller_summary.get("amazon_seller"),
             )
 
             if self.seller_delay_range != (0, 0):
@@ -285,6 +281,7 @@ class SearchPipeline:
             logger.warning("Seller fetch failed for %s: %s", asin, exc)
             product["seller_info"] = {
                 "amazon_seller": False,
+                "brand_is_seller": False,
                 "total_sellers": None,
                 "seller_name": None,
                 "data_status": "unavailable",

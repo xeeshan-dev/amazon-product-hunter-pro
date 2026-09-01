@@ -108,17 +108,17 @@ class WinningProductFilter:
         risks = product.get("risks") or {}
 
         # ---- Brand-owns-listing detection ---------------------------------
-        # "The brand should not be the one selling it."
-        # We check two signals:
-        #   a) seller_name substring-matches the product brand (existing logic)
-        #   b) the listing appears to be a brand-direct storefront (new)
+        # Primary signal: SellerAnalyzer checked EVERY offer against the brand
+        # (bidirectional substring match across the full AOD offer list).
+        seller_brand_is_seller = bool(seller.get("brand_is_seller", False))
+
+        # Secondary signal: name-match on buy-box seller vs product brand field
         brand = (product.get("brand") or "").strip().lower()
         seller_name = (seller.get("seller_name") or "").strip().lower()
-        confirmed_brand_owner = bool(
+        name_match = bool(
             brand and seller_name and (brand in seller_name or seller_name in brand)
         )
-        # Additional: if brand appears in title as "Visit the X Store" style
-        # this is a strong signal the brand itself owns the listing.
+        # Title storefront signal ("Visit the Adidas Store", "by Adidas")
         title_lower = (product.get("title") or "").lower()
         brand_storefront_signal = bool(
             brand and (
@@ -127,20 +127,30 @@ class WinningProductFilter:
                 or seller_name == brand
             )
         )
-        confirmed_brand_owner = confirmed_brand_owner or brand_storefront_signal
+        confirmed_brand_owner = seller_brand_is_seller or name_match or brand_storefront_signal
 
-        # ---- Amazon market dominance detection ----------------------------
-        # "Amazon should not have market dominance."
-        # We consider Amazon dominant when:
-        #   a) Amazon is confirmed as a seller, AND
-        #   b) this product's estimated revenue share within the search
-        #      result set is above AMAZON_DOMINANCE_THRESHOLD.
-        # market_share is set by the pipeline as (est_revenue / total_market_revenue)*100
+        # ---- Amazon seller detection --------------------------------------
+        # "Amazon should not be selling this product."
+        # confirmed_amazon_seller = True when Amazon appears in ANY offer
+        # (buy-box OR any other offer in the AOD list).
         confirmed_amazon_seller = bool(seller.get("amazon_seller"))
+
+        # amazon_dominant = True when Amazon is confirmed AND has a large share
+        # of the search result revenue (used for soft scoring only).
+        # For the hard exclude, confirmed_amazon_seller alone is enough
+        # when skip_amazon_seller is True.
         product_market_share_pct = self._number(product.get("market_share"))
         amazon_dominant = (
             confirmed_amazon_seller
             and product_market_share_pct >= (AMAZON_DOMINANCE_THRESHOLD * 100)
+        )
+
+        # ---- Confirmed conflict (hard exclude) ----------------------------
+        # skip_amazon_seller: exclude if Amazon is ANY seller (not just dominant)
+        # skip_brand_seller: exclude if brand owns ANY offer
+        confirmed_conflict = (
+            (request.skip_amazon_seller and confirmed_amazon_seller)
+            or (request.skip_brand_seller and confirmed_brand_owner)
         )
 
         # ---- Strict match (meets every preference numerically) ------------
@@ -148,12 +158,6 @@ class WinningProductFilter:
             sales >= request.min_sales
             and sales <= request.max_sales
             and margin >= request.min_margin
-        )
-
-        # ---- Confirmed conflict (hard exclude when requested) -------------
-        confirmed_conflict = (
-            (request.skip_amazon_seller and confirmed_amazon_seller)
-            or (request.skip_brand_seller and confirmed_brand_owner)
         )
 
         # ---- Confirmed major risk (IP / hazmat veto) ----------------------

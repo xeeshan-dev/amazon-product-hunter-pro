@@ -339,71 +339,42 @@ class AmazonScraper:
             logger.error(f"Error scraping product {asin}: {str(e)}")
             return None
     
-    def get_seller_summary(self, asin: str) -> Dict:
-        """Fetch seller info - tries AOD first, then falls back to product page"""
+    def get_seller_summary(self, asin: str, brand: str = "") -> Dict:
+        """Fetch seller info via AOD AJAX. Returns normalized dict."""
         try:
             headers = self._get_headers()
             referer_url = f"{self.base_url}/dp/{asin}"
-            
-            # Try method 1: AOD AJAX endpoint (fast)
+
             info = self.seller_analyzer.analyze_sellers(
                 soup=None,
                 asin=asin,
                 headers=headers,
                 session=self.session,
-                referer=referer_url
+                referer=referer_url,
+                brand=brand,
             )
-            
-            # If we got seller name, success!
-            if info.seller_name:
-                logger.debug(f"[{asin}] Got seller via AOD: {info.seller_name}")
-                return {
-                    'fba_count': info.fba_count,
-                    'fbm_count': info.fbm_count,
-                    'amazon_seller': info.amazon_seller,
-                    'total_sellers': info.total_sellers,
-                    'prices': info.prices,
-                    'seller_name': info.seller_name
-                }
-            
-            # Method 2: Full product page scrape (slow but reliable)
-            logger.debug(f"[{asin}] AOD failed, falling back to product page")
-            product_url = f"{self.base_url}/dp/{asin}"
-            response = self.session.get(product_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                info = self.seller_analyzer.analyze_sellers(
-                    soup=soup,
-                    asin=asin,
-                    headers=headers,
-                    session=self.session,
-                    referer=referer_url
-                )
-                
-                logger.debug(f"[{asin}] Got seller via product page: {info.seller_name}")
-                return {
-                    'fba_count': info.fba_count,
-                    'fbm_count': info.fbm_count,
-                    'amazon_seller': info.amazon_seller,
-                    'total_sellers': info.total_sellers,
-                    'prices': info.prices,
-                    'seller_name': info.seller_name
-                }
-            
+
+            return {
+                "fba_count": info.fba_count,
+                "fbm_count": info.fbm_count,
+                "amazon_seller": info.amazon_seller,
+                "brand_is_seller": info.brand_is_seller,
+                "total_sellers": info.total_sellers,
+                "seller_name": info.buy_box_seller_name,
+                "prices": info.prices,
+            }
+
         except Exception as e:
-            logger.error(f"Error fetching seller summary for {asin}: {str(e)}")
-        
-        # Return empty if all methods fail
+            logger.error("Error fetching seller summary for %s: %s", asin, e)
+
         return {
-            'fba_count': 0,
-            'fbm_count': 0,
-            'amazon_seller': False,
-            'total_sellers': 0,
-            'prices': {'fba': [], 'fbm': []},
-            'seller_name': None
+            "fba_count": 0,
+            "fbm_count": 0,
+            "amazon_seller": False,
+            "brand_is_seller": False,
+            "total_sellers": 0,
+            "prices": {"fba": [], "fbm": []},
+            "seller_name": None,
         }
             
     def _extract_search_item_data(self, item) -> Optional[Dict]:

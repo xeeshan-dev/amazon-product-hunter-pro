@@ -55,12 +55,12 @@ class AmazonHTMLProvider(ProductDataProvider):
             return None
         return self._normalize_product(product)
 
-    async def get_sellers(self, asin: str) -> Dict[str, Any]:
-        summary = await asyncio.to_thread(self.scraper.get_seller_summary, asin)
+    async def get_sellers(self, asin: str, brand: str = "") -> Dict[str, Any]:
+        summary = await asyncio.to_thread(self.scraper.get_seller_summary, asin, brand)
         return self._normalize_seller_summary(summary)
 
-    async def get_offers(self, asin: str) -> Dict[str, Any]:
-        return await self.get_sellers(asin)
+    async def get_offers(self, asin: str, brand: str = "") -> Dict[str, Any]:
+        return await self.get_sellers(asin, brand=brand)
 
     def _normalize_product(self, product: Dict[str, Any]) -> Dict[str, Any]:
         normalized = dict(product or {})
@@ -102,6 +102,7 @@ class AmazonHTMLProvider(ProductDataProvider):
             "fba_count": self._int_or_default(seller.get("fba_count"), 0),
             "fbm_count": self._int_or_default(seller.get("fbm_count"), 0),
             "amazon_seller": bool(seller.get("amazon_seller", False)),
+            "brand_is_seller": bool(seller.get("brand_is_seller", False)),
             "total_sellers": self._int_or_default(seller.get("total_sellers"), 0),
             "prices": {
                 "fba": list(prices.get("fba") or []),
