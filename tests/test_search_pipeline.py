@@ -126,7 +126,8 @@ async def test_search_pipeline_filters_and_scores_products():
     assert response["summary"]["total_revenue"] == 2000.0
     assert response["results"][0]["asin"] == "B001"
     assert response["results"][0]["enhanced_score"] == 80
-    assert response["results"][0]["seller_info"]["seller_name"] is None
+    # seller data is always fetched (needed for brand-owner / Amazon dominance detection)
+    assert response["results"][0]["seller_info"]["data_status"] == "observed"
     assert response["summary"]["filter_mode"] == "strict"
 
 

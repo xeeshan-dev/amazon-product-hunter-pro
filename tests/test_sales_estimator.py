@@ -8,11 +8,11 @@ def test_bsr_sales_estimator_matches_current_category_curve():
         SalesEstimateInput(bsr=10_000, category="Home & Kitchen")
     )
 
-    assert result.monthly_sales == 1255
-    assert result.lower_bound == 878
-    assert result.upper_bound == 1632
+    assert result.monthly_sales == 1202
+    assert result.lower_bound == 841
+    assert result.upper_bound == 1563
     assert result.confidence == 0.65
-    assert result.method == "bsr_log_curve"
+    assert result.method == "bsr_log_curve_v2"
 
 
 def test_bsr_sales_estimator_handles_top_100_bsr():
@@ -20,7 +20,7 @@ def test_bsr_sales_estimator_handles_top_100_bsr():
 
     result = estimator.estimate(SalesEstimateInput(bsr=50, category="Electronics"))
 
-    assert result.monthly_sales == 5500
+    assert result.monthly_sales == 12500
     assert result.confidence == 0.75
 
 
