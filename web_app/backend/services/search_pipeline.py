@@ -46,6 +46,9 @@ class SearchPipeline:
         risk_analyzer: ProductRiskAnalyzer,
         provider_factory: Callable[..., Any] = AmazonHTMLProvider,
         seller_delay_range: tuple[float, float] = (0.3, 0.7),
+        seller_enrichment_limit: int = 20,
+        seller_enrichment_concurrency: int = 3,
+        seller_enrichment_timeout: float = 12.0,
         persistence_service: Optional[Any] = None,
         winning_filter: Optional[WinningProductFilter] = None,
         history_service: Optional[Any] = None,
@@ -55,6 +58,9 @@ class SearchPipeline:
         self.risk_analyzer = risk_analyzer
         self.provider_factory = provider_factory
         self.seller_delay_range = seller_delay_range
+        self.seller_enrichment_limit = max(1, seller_enrichment_limit)
+        self.seller_enrichment_concurrency = max(1, seller_enrichment_concurrency)
+        self.seller_enrichment_timeout = max(1.0, seller_enrichment_timeout)
         self.persistence_service = persistence_service
         self.winning_filter = winning_filter or WinningProductFilter()
         self.history_service = history_service
@@ -84,8 +90,7 @@ class SearchPipeline:
         )
         logger.info("Collected %s raw products", len(raw_products))
 
-        strict_results: List[Dict[str, Any]] = []
-        review_results: List[Dict[str, Any]] = []
+        candidates: List[Dict[str, Any]] = []
 
         for product in raw_products:
             candidate = dict(product)
@@ -115,7 +120,16 @@ class SearchPipeline:
                 continue
 
             # Stage 8: seller enrichment (only when needed — network cost)
+            candidates.append(candidate)
+
+        # Enrich each candidate with seller info
+        for candidate in candidates:
             await self._enrich_seller_info(candidate, request, provider)
+
+        strict_results: List[Dict[str, Any]] = []
+        review_results: List[Dict[str, Any]] = []
+
+        for candidate in candidates:
 
             # Stage 9-10: WinningProductFilter handles brand-owner detection,
             # Amazon dominance, composite scoring, and verdict.
@@ -225,24 +239,14 @@ class SearchPipeline:
         request,
         provider,
     ) -> None:
-        """Fetch seller / AOD data.  Only makes a network call when needed."""
-        need_seller_data = (
-            request.skip_amazon_seller or request.skip_brand_seller
-        )
-        if not need_seller_data:
-            product["seller_info"] = {
-                "amazon_seller": False,
-                "total_sellers": 0,
-                "seller_name": None,
-                "data_status": "not_requested",
-            }
-            return
-
+        """Fetch seller / AOD data for all products - critical for decision making."""
         asin = product.get("asin")
         if not asin:
             product["seller_info"] = {
                 "amazon_seller": False,
                 "total_sellers": None,
+                "fba_count": 0,
+                "fbm_count": 0,
                 "seller_name": None,
                 "data_status": "unavailable",
             }
@@ -252,6 +256,14 @@ class SearchPipeline:
             seller_summary = await provider.get_sellers(asin)
             seller_summary["data_status"] = "observed"
             product["seller_info"] = seller_summary
+            
+            # Log seller data for visibility
+            logger.info(
+                f"[{asin}] Seller data: FBA={seller_summary.get('fba_count', 0)}, "
+                f"FBM={seller_summary.get('fbm_count', 0)}, "
+                f"Amazon={seller_summary.get('amazon_seller', False)}, "
+                f"Seller={seller_summary.get('seller_name', 'Unknown')}"
+            )
 
             # Resolve brand: prefer the field, then scrape-level extraction.
             # Do NOT fall back to the first word of the title — that is too

@@ -15,6 +15,12 @@ beautifulsoup4==4.12.2
 fake-useragent==1.4.0
 lxml==4.9.3
 
+# Enhanced anti-blocking (optional - install as needed)
+# curl-cffi==0.6.2  # TLS fingerprinting (uncomment for Tier 1)
+# playwright==1.40.0  # Browser automation (uncomment for Tier 2)
+# playwright-stealth==1.0.6  # Stealth mode (uncomment for Tier 2)
+# 2captcha-python==1.2.3  # CAPTCHA solving (uncomment for Tier 4)
+
 # Persistence used by current tracking workflow
 sqlalchemy==2.0.23
 python-dotenv==1.0.0

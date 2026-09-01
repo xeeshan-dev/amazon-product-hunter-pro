@@ -56,11 +56,21 @@ class Settings(BaseSettings):
     SCRAPING_ENABLED: bool = True
     MAX_CONCURRENT_REQUESTS: int = 5
     REQUEST_TIMEOUT: int = 30
-    MIN_DELAY_SECONDS: float = 2.0
-    MAX_DELAY_SECONDS: float = 5.0
+    MIN_DELAY_SECONDS: float = 3.0
+    MAX_DELAY_SECONDS: float = 8.0
     MAX_RETRIES: int = 3
     AMAZON_BASE_URL: str = "https://www.amazon.com"
     USER_AGENT_ROTATION: bool = True
+
+    # Enhanced Anti-Blocking
+    USE_SMART_FETCHER: bool = True
+    ENABLE_BROWSER_FALLBACK: bool = True
+    BROWSER_HEADLESS: bool = True
+    ENABLE_PROXY_ROTATION: bool = False
+    ENABLE_CAPTCHA_HANDLING: bool = True
+    ADAPTIVE_RATE_LIMITING: bool = True
+    TLS_FINGERPRINTING: bool = True
+    TWO_CAPTCHA_API_KEY: Optional[str] = None
 
     # Proxy
     USE_PROXY: bool = False
@@ -155,11 +165,21 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins(self) -> list[str]:
-        return [
+        configured = [
             origin.strip()
             for origin in self.ALLOWED_ORIGINS.split(",")
             if origin.strip()
         ]
+        # Local development commonly alternates between localhost and the
+        # loopback IP. Keep both aliases available even if an older .env or
+        # process-level ALLOWED_ORIGINS value contains only one of them.
+        local_origins = {
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        }
+        return list(dict.fromkeys(configured + sorted(local_origins)))
 
 
 @lru_cache()

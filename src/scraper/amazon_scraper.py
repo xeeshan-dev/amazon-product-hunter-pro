@@ -1,10 +1,8 @@
 import requests
 from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
-import time
-import random
 from typing import Dict, List, Optional
 import logging
+from urllib.parse import urlencode
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from config.settings import Config
 from analytics.sales_estimator import BSRSalesEstimator, SalesEstimateInput
 from analysis.seller_analysis import SellerAnalyzer
+from scraper.anti_block import AntiBlockFetcher
 
 class AmazonScraper:
     # Marketplace-specific locale preferences, keyed by TLD fragment.
@@ -32,21 +31,56 @@ class AmazonScraper:
     )
 
     def __init__(self, base_url: Optional[str] = None):
-        self.ua = UserAgent()
         self.base_url = base_url or Config.BASE_URL
         self.prefs = self._resolve_marketplace_prefs()
         self.seller_analyzer = SellerAnalyzer()
         self.sales_estimator = BSRSalesEstimator()
-        self._new_session()
+        from config.settings import get_settings
+        settings = get_settings()
+        
+        # Initialize fetcher based on configuration
+        if settings.USE_SMART_FETCHER:
+            # NEW: Enhanced SmartFetcher with 4-tier anti-blocking
+            logger.info("Using SmartFetcher (enhanced anti-blocking system)")
+            from scraper.smart_fetcher import SmartFetcher
+            
+            self.fetcher = SmartFetcher(
+                base_url=self.base_url,
+                min_delay=settings.MIN_DELAY_SECONDS,
+                max_delay=settings.MAX_DELAY_SECONDS,
+                max_retries=settings.MAX_RETRIES,
+                request_timeout=settings.REQUEST_TIMEOUT,
+                enable_browser_fallback=settings.ENABLE_BROWSER_FALLBACK,
+                browser_headless=settings.BROWSER_HEADLESS,
+                enable_proxy=settings.ENABLE_PROXY_ROTATION or settings.USE_PROXY,
+                proxy_url=settings.PROXY_URL or settings.BRIGHT_DATA_PROXY_URL,
+                enable_captcha_handling=settings.ENABLE_CAPTCHA_HANDLING,
+                captcha_api_key=settings.TWO_CAPTCHA_API_KEY,
+                adaptive_rate_limiting=settings.ADAPTIVE_RATE_LIMITING,
+            )
+            self.session = self.fetcher.http_fetcher.session  # For compatibility
+            self._using_smart_fetcher = True
+        else:
+            # OLD: Original AntiBlockFetcher (fallback for compatibility)
+            logger.info("Using AntiBlockFetcher (legacy mode)")
+            proxy_url = settings.PROXY_URL or settings.BRIGHT_DATA_PROXY_URL
+            self.fetcher = AntiBlockFetcher(
+                base_url=self.base_url,
+                min_delay=settings.MIN_DELAY_SECONDS,
+                max_delay=settings.MAX_DELAY_SECONDS,
+                max_retries=settings.MAX_RETRIES,
+                request_timeout=settings.REQUEST_TIMEOUT,
+                user_agent_rotation=settings.USER_AGENT_ROTATION,
+                use_proxy=settings.USE_PROXY,
+                proxy_url=proxy_url,
+            )
+            self.session = self.fetcher.session
+            self._using_smart_fetcher = False
 
     def _new_session(self):
         """Create a session, applying configured proxy settings if present."""
-        from config.settings import get_settings
-        settings = get_settings()
-        self.session = requests.Session()
-        proxy_url = settings.PROXY_URL or settings.BRIGHT_DATA_PROXY_URL
-        if settings.USE_PROXY and proxy_url:
-            self.session.proxies = {'http': proxy_url, 'https': proxy_url}
+        self.fetcher.reset_session()
+        self.session = self.fetcher.session
 
     def _resolve_marketplace_prefs(self) -> Dict:
         for marker, prefs in self.MARKETPLACE_PREFS.items():
@@ -55,66 +89,62 @@ class AmazonScraper:
         return dict(self.DEFAULT_PREFS)
 
     def _get_headers(self) -> Dict:
-        return {
-            # One consistent UA per session; rotated between retry attempts.
-            'User-Agent': getattr(self, '_ua_string', None) or self._rotate_user_agent(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': self.prefs['language'],
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Cookie': f"i18n-prefs={self.prefs['currency']}",
-        }
+        return self.fetcher.build_headers(self.base_url)
 
     def _rotate_user_agent(self) -> str:
-        self._ua_string = self.ua.random
-        return self._ua_string
+        return self.fetcher.rotate_user_agent()
 
     @staticmethod
     def _is_blocked(response) -> bool:
         """Detect bot challenges / interstitials that look like HTTP success."""
-        if response.status_code in (503, 429):
-            return True
-        try:
-            text = response.text[:20000]
-        except Exception:
-            return False
-        if any(marker in text for marker in AmazonScraper.BLOCK_MARKERS):
-            return True
-        # Challenge/interstitial pages are tiny compared with real result pages.
-        return len(response.content) < 30_000
+        return AntiBlockFetcher.response_block_reason(response, min_response_bytes=25_000) is not None
+
+    def get_scraper_stats(self) -> Dict:
+        """Get anti-blocking system statistics (if SmartFetcher is enabled)."""
+        if self._using_smart_fetcher and hasattr(self.fetcher, 'get_stats'):
+            return self.fetcher.get_stats()
+        return {
+            "message": "SmartFetcher not enabled. Set USE_SMART_FETCHER=true in .env",
+            "using_smart_fetcher": self._using_smart_fetcher,
+        }
 
     def _fetch_with_retries(self, url: str):
         """Fetch a page with backoff + fresh fingerprints on block pages."""
-        from config.settings import get_settings
-        settings = get_settings()
-        attempts = max(1, settings.MAX_RETRIES)
-        last_response = None
-        for attempt in range(1, attempts + 1):
-            try:
-                response = self.session.get(
-                    url,
-                    headers=self._get_headers(),
-                    timeout=min(settings.REQUEST_TIMEOUT, 20),
+        if self._using_smart_fetcher:
+            # NEW: SmartFetcher returns FetchResult object
+            result = self.fetcher.get(url)
+            
+            # Update session reference
+            if hasattr(self.fetcher, 'http_fetcher'):
+                self.session = self.fetcher.http_fetcher.session
+            
+            # Log fetch details
+            if result.success:
+                logger.debug(
+                    f"SmartFetcher success: {url} (strategy={result.strategy.value}, "
+                    f"attempts={result.attempts})"
                 )
-                last_response = response
-                if response.ok and not self._is_blocked(response):
-                    return response
+            else:
                 logger.warning(
-                    "Amazon block/challenge suspected (%s, status=%s, bytes=%s) "
-                    "for %s - attempt %s/%s",
-                    self.base_url,
-                    response.status_code,
-                    len(response.content),
-                    url,
-                    attempt,
-                    attempts,
+                    f"SmartFetcher failed: {url} (reason={result.block_reason}, "
+                    f"attempts={result.attempts})"
                 )
-            except Exception as exc:
-                logger.warning("Request failed for %s (attempt %s/%s): %s", url, attempt, attempts, exc)
-            self._new_session()  # fresh cookies/fingerprint (proxy re-applied)
-            if attempt < attempts:
-                time.sleep(min(2 ** attempt, 8) + random.uniform(0, 1))
-        return last_response
+            
+            # Return response (compatible with old code)
+            return result.response if result.success else None
+        else:
+            # OLD: AntiBlockFetcher returns response directly
+            response = self.fetcher.get(url)
+            self.session = self.fetcher.session
+            return response
+
+    def _search_url(self, keyword: str, page: int, category: Optional[str] = None) -> str:
+        query = {"k": keyword, "page": page}
+        if category and category != "All Categories":
+            category_id = self._get_category_id(category)
+            if category_id:
+                query["rh"] = f"n:{category_id}"
+        return f"{self.base_url}/s?{urlencode(query)}"
 
     
     def search_products(self, keyword: str, pages: int = 1, category: str = None, is_asin: bool = False) -> List[Dict]:
@@ -134,10 +164,7 @@ class AmazonScraper:
             else:
                 # Fast keyword-based search
                 for page in range(1, pages + 1):
-                    url = f"{self.base_url}/s?k={keyword}"
-                    if category and category != "All Categories":
-                        url += f"&rh=n%3A{self._get_category_id(category)}"
-                    url += f"&page={page}"
+                    url = self._search_url(keyword, page, category)
                     
                     response = self._fetch_with_retries(url)
                     if response is None or not response.ok:
@@ -152,6 +179,15 @@ class AmazonScraper:
                     
                     items = soup.find_all('div', {'data-component-type': 's-search-result'})
                     
+                    # Debug: Log what we found
+                    logger.info(f"Page {page}: Found {len(items)} product items")
+                    if len(items) == 0:
+                        # Try alternative selectors
+                        alt_items = soup.find_all('div', {'data-asin': True})
+                        logger.info(f"Page {page}: Found {len(alt_items)} items with data-asin attribute")
+                        if len(alt_items) > 0:
+                            items = alt_items
+                    
                     for item in items:
                         product = self._extract_search_item_data(item)
                         if product and product.get('price'):  # Only keep with valid prices
@@ -162,11 +198,13 @@ class AmazonScraper:
                             
                             self._add_market_metrics(product)
                             products.append(product)
+                        elif product and not product.get('price'):
+                            logger.warning(f"Product {product.get('asin')} has no price, skipping")
+                        elif not product:
+                            logger.warning(f"Failed to extract product data from item")
                     
-                    # Minimal delay between pages
-                    if page < pages:
-                        time.sleep(0.5)
-
+                    logger.info(f"Page {page}: Extracted {len([p for p in products if p])} valid products so far")
+                    
             # Post-processing: Calculate Market Share
             total_sales = sum(p.get('estimated_sales', 0) for p in products)
             if total_sales > 0:
@@ -285,7 +323,9 @@ class AmazonScraper:
         url = f"{self.base_url}/dp/{asin}"
         
         try:
-            response = self.session.get(url, headers=self._get_headers())
+            response = self._fetch_with_retries(url)
+            if response is None or not response.ok:
+                return None
             soup = BeautifulSoup(response.content, 'html.parser')
             
             try:
@@ -370,6 +410,7 @@ class AmazonScraper:
         try:
             asin = item.get('data-asin')
             if not asin:
+                logger.debug("Item has no ASIN, skipping")
                 return None
                 
             # Title extraction
@@ -382,13 +423,32 @@ class AmazonScraper:
             )
             title = title_elem.get_text().strip() if title_elem else None
             
-            # Price extraction - look for the main price container first
-            # Amazon uses 'a-price' class as the main price wrapper
+            if not title:
+                logger.debug(f"ASIN {asin}: No title found, skipping")
+                return None
+            
+            # Price extraction - Amazon has MULTIPLE price formats
+            # Format 1: Featured offer with a-price class
             price_elem = item.find('span', {'class': 'a-price', 'data-a-color': 'base'})
             if not price_elem:
                 price_elem = item.find('span', {'class': 'a-price'})
+            
+            # Format 2: Secondary offers (NEW - common in 2026)
+            # Structure: div[data-cy="secondary-offer-recipe"] > ... > span.a-color-base
             if not price_elem:
-                # Fallback to other price selectors
+                secondary_div = item.find('div', {'data-cy': 'secondary-offer-recipe'})
+                if secondary_div:
+                    # Look for price pattern like "$18.26" in a-color-base spans
+                    import re
+                    for span in secondary_div.find_all('span', {'class': 'a-color-base'}):
+                        text = span.get_text().strip()
+                        if re.match(r'^\$[\d,]+\.\d{2}$', text):
+                            # Found price! Wrap it in a container for _extract_price
+                            price_elem = span
+                            break
+            
+            # Format 3: Other price selectors
+            if not price_elem:
                 price_elem = (
                     item.find('span', {'class': 'a-color-price'}) or
                     item.find('span', {'class': 'a-offscreen'}) or
@@ -421,6 +481,11 @@ class AmazonScraper:
             rating = self._extract_rating(rating_elem) if rating_elem else 0.0
             reviews = self._extract_reviews(reviews_elem) if reviews_elem else 0
             
+            # Log if no price found
+            if not price:
+                logger.debug(f"ASIN {asin} ({title[:50]}...): No price found, skipping")
+                return None
+            
             # Additional fallback for reviews - look in the entire item
             if reviews == 0:
                 item_text = item.get_text()
@@ -432,7 +497,7 @@ class AmazonScraper:
                     except:
                         pass
             
-            return {
+            product = {
                 'asin': asin,
                 'title': title,
                 'price': price,
@@ -441,8 +506,11 @@ class AmazonScraper:
                 'url': f"{self.base_url}/dp/{asin}"
             }
             
+            logger.debug(f"Extracted product: ASIN={asin}, price=${price}, rating={rating}, reviews={reviews}")
+            return product
+            
         except Exception as e:
-            logger.debug(f"Error extracting search item data: {str(e)}")
+            logger.warning(f"Error extracting search item data: {str(e)}")
             return None
     
     def _extract_product_details(self, soup, asin: str) -> Dict:
