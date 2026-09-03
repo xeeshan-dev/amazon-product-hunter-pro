@@ -16,11 +16,14 @@ function cn(...inputs) {
 
 function ProductHunter() {
     const [selectedProduct, setSelectedProduct] = useState(null)
-    const [keyword, setKeyword] = useState('')
+    const [keyword, setKeyword] = useState(() => sessionStorage.getItem('lastKeyword') || '')
     const [loading, setLoading] = useState(false)
-    const [data, setData] = useState(null)
+    const [data, setData] = useState(() => {
+        const saved = sessionStorage.getItem('lastSearchResults')
+        return saved ? JSON.parse(saved) : null
+    })
     const [error, setError] = useState(null)
-    const [marketplace, setMarketplace] = useState('US')
+    const [marketplace, setMarketplace] = useState(() => sessionStorage.getItem('lastMarketplace') || 'US')
     const [minRating, setMinRating] = useState(3.0)
     const [skipRisky, setSkipRisky] = useState(true)
     const [showFilters, setShowFilters] = useState(false)
@@ -96,6 +99,10 @@ function ProductHunter() {
                 fetch_seller_info: true
             })
             setData(response.data)
+            // Persist search results to sessionStorage
+            sessionStorage.setItem('lastSearchResults', JSON.stringify(response.data))
+            sessionStorage.setItem('lastKeyword', keyword)
+            sessionStorage.setItem('lastMarketplace', marketplace)
         } catch (err) {
             setError('Failed to fetch data. Please try again.')
             console.error(err)
